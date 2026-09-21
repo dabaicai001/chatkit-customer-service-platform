@@ -81,6 +81,10 @@ intents:
     action: none
     description: 打招呼/寒暄
     keywords: [你好, 您好, 在吗, hi, hello, 在不在, 嗨]
+  customer_identify:
+    action: search_customer
+    description: 客户表明身份(姓名/手机号/客户ID),先检索确认身份
+    keywords: [我是, 手机号, 姓名, 查客户, 账号]
   order_query:
     action: get_order
     description: 查询订单状态/物流进度
@@ -177,6 +181,8 @@ mcp:
     create_ticket: crm.create_ticket
     refund_order: crm.refund_order
     cancel_order: crm.cancel_order
+    # 可选:令牌换身份(已登录场景配了才启用 X-Customer-Token 请求头)
+    # resolve_token: crm.resolve_token
     # 画像聚合(侧栏面板 / Jev 上下文注入)
     get_customer: crm.get_customer
     list_orders: crm.list_orders

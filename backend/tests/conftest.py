@@ -82,6 +82,10 @@ intents:
     action: none
     description: 打招呼
     keywords: [你好, 在吗]
+  customer_identify:
+    action: search_customer
+    description: 身份识别
+    keywords: [我是, 手机号, 李明, 查客户, 客户]
   order_query:
     action: get_order
     description: 查询订单

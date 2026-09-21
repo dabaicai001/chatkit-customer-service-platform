@@ -209,6 +209,9 @@ class CustomerServiceServer(ChatKitServer[dict[str, Any]]):
     ) -> AsyncIterator[ThreadStreamEvent]:
         message_text = self._user_message_text(user_message)
 
+        # 0) 身份绑定(已登录场景:从请求头取身份信号,无需用户自述)
+        await self._bind_identity_from_request(thread.id, context)
+
         # 1) 客户画像(经 MCP;未识别身份时为 None)
         profile = await self._load_profile(thread.id)
 
@@ -393,6 +396,61 @@ class CustomerServiceServer(ChatKitServer[dict[str, Any]]):
         return TranscriptionResult(text=transcription.text)
 
     # ------------------------------------------------------------- 内部:画像
+    async def _bind_identity_from_request(
+        self, thread_id: str, context: dict[str, Any]
+    ) -> None:
+        """从请求头提取身份信号并绑定会话(真实环境的已登录场景)。
+
+        身份信号来自渠道/登录态,不来自 MCP;MCP 只负责拿到 ID 之后的
+        客户资料/订单/工单数据。支持的请求头:
+
+        - ``X-Customer-Id``   :网关/前端已完成鉴权,直接传客户 ID(生产推荐,
+          应由网关注入而非信任客户端直传);
+        - ``X-Customer-Phone``:传手机号,经 MCP search_customer 解析出客户;
+        - ``X-Customer-Token``:传令牌,经 MCP resolve_token 换取客户 ID
+          (需在 business.yaml 的 mcp.tool_mapping 中配置该映射才启用)。
+
+        匿名访客不使用请求头,仍由对话内的 search_customer 路径识别。
+        """
+
+        if self.sessions.customer_id(thread_id):
+            return
+        request = (context or {}).get("request")
+        headers = getattr(request, "headers", None)
+        if headers is None:
+            return
+
+        customer_id = (headers.get("x-customer-id") or "").strip()
+        if customer_id:
+            self.sessions.bind_customer(thread_id, customer_id)
+            return
+
+        phone = (headers.get("x-customer-phone") or "").strip()
+        if phone:
+            try:
+                result = await self.tools.execute(
+                    "search_customer", thread_id=thread_id, params={"phone": phone}
+                )
+            except Exception as exc:
+                logger.warning("按手机号识别客户失败:%s", exc)
+                return
+            if result.get("found"):
+                logger.info("已按手机号识别客户(thread=%s)。", thread_id)
+            return
+
+        token = (headers.get("x-customer-token") or "").strip()
+        mapping = self.mcp.mapping_for("resolve_token") if token else None
+        if mapping:
+            try:
+                payload = await self.mcp.call_tool(mapping, {"token": token})
+                data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+                resolved = str(data.get("customer_id") or "").strip()
+            except Exception as exc:
+                logger.warning("令牌解析客户身份失败:%s", exc)
+                return
+            if resolved:
+                self.sessions.bind_customer(thread_id, resolved)
+
     async def _load_profile(self, thread_id: str) -> Optional[CustomerProfile]:
         customer_id = self.sessions.customer_id(thread_id)
         if not customer_id:

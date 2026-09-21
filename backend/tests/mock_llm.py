@@ -59,6 +59,25 @@ def _jev_decision(user_message: str) -> dict:
             "slots": slots,
             "reason": "用户明确要求人工",
         }
+    # 身份识别(本地演示:说"我是李明/手机号"即可点亮侧栏客户档案)
+    if any(w in message for w in ("我是", "手机号", "李明", "查客户", "客户")) and "订单" not in message:
+        phone_match = re.search(r"1[3-9]\d{9}", user_message)
+        keyword = "李明" if "李明" in message else (phone_match.group(0) if phone_match else "")
+        identity_slots = {"query": user_message}
+        if keyword:
+            identity_slots["keyword"] = keyword
+        return {
+            "intent": "customer_identify",
+            "confidence": 0.95,
+            "emotion": "normal",
+            "need_customer_lookup": True,
+            "need_rag": False,
+            "need_tool": True,
+            "need_human": False,
+            "action": "search_customer",
+            "slots": identity_slots,
+            "reason": "用户在表明身份,先检索客户",
+        }
     if "退款" in message:
         return {
             "intent": "refund_request",
@@ -182,9 +201,20 @@ async def chat_completions(request: ChatRequest):
         }
 
     # Qwen 生成请求(流式)
+    # 演示用:把 system 里的「工具结果/待确认」原样回显,模拟真实 grounding 话术
     reply = f"【mock 客服回复】已收到:{user[-60:]}"
     if "已查证信息" in system:
-        reply = "【mock 客服回复】根据已查证信息,您的诉求已记录并处理。"
+        evidence = ""
+        for line in system.splitlines():
+            if line.startswith("[工具结果]"):
+                evidence = line[len("[工具结果]"):].strip()
+            elif line.startswith("[待确认动作]"):
+                evidence = line[len("[待确认动作]"):].strip()
+        reply = (
+            f"【mock 客服回复】{evidence}"
+            if evidence
+            else "【mock 客服回复】根据已查证信息,您的诉求已记录并处理。"
+        )
     chunks = [reply[i : i + 8] for i in range(0, len(reply), 8)]
     if not request.stream:
         return {

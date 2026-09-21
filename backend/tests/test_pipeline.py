@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from chatkit.types import (
@@ -32,9 +33,9 @@ def make_user_message(thread_id: str, text: str) -> UserMessageItem:
     )
 
 
-async def collect_respond(server, thread, message):
+async def collect_respond(server, thread, message, context=None):
     events = []
-    async for event in server.respond(thread, message, {"request": None}):
+    async for event in server.respond(thread, message, context or {"request": None}):
         events.append(event)
     return events
 
@@ -237,6 +238,48 @@ async def test_respond_generates_title(customer_server):
     message = make_user_message(thread.id, "我的订单到哪了")
     await collect_respond(customer_server, thread, message)
     assert thread.title == "订单物流咨询"
+
+
+# ---------------------------------------------------------------------------
+# 身份来源(真实环境:登录态经请求头传入)
+# ---------------------------------------------------------------------------
+async def test_respond_binds_identity_from_header(customer_server):
+    """已登录场景:X-Customer-Id 请求头直接绑定身份,侧栏立即可见画像。"""
+
+    from starlette.datastructures import Headers
+
+    thread = make_thread("thread_identity")
+    message = make_user_message(thread.id, "你好")
+    context = {"request": SimpleNamespace(headers=Headers({"x-customer-id": "cus_10086"}))}
+    await collect_respond(customer_server, thread, message, context)
+
+    assert customer_server.sessions.customer_id("thread_identity") == "cus_10086"
+    profile = await customer_server.gateway.load_profile("cus_10086")
+    assert profile.name == "李明"
+    assert len(profile.orders) >= 1
+
+
+async def test_respond_binds_identity_by_phone_header(customer_server):
+    """前端已知手机号:X-Customer-Phone 经 MCP search_customer 解析身份。"""
+
+    from starlette.datastructures import Headers
+
+    thread = make_thread("thread_identity_phone")
+    message = make_user_message(thread.id, "你好")
+    context = {
+        "request": SimpleNamespace(headers=Headers({"x-customer-phone": "13800008888"}))
+    }
+    await collect_respond(customer_server, thread, message, context)
+    assert customer_server.sessions.customer_id("thread_identity_phone") == "cus_10086"
+
+
+async def test_respond_without_identity_stays_anonymous(customer_server):
+    """匿名访客:无请求头且未自述身份时,不绑定任何客户。"""
+
+    thread = make_thread("thread_anonymous")
+    message = make_user_message(thread.id, "你好")
+    await collect_respond(customer_server, thread, message)
+    assert customer_server.sessions.customer_id("thread_anonymous") is None
 
 
 # ---------------------------------------------------------------------------
