@@ -1,0 +1,16 @@
+{
+  "name": "customer-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "通用客服平台:ChatKit UI + Jev 决策 + Qwen 生成 + RAG + 插件化 Tools + MCP 数据面",
+  "scripts": {
+    "install:all": "npm --prefix frontend install",
+    "dev": "concurrently --kill-others-on-fail --names backend,frontend \"npm run backend\" \"npm run frontend\"",
+    "backend": "./backend/scripts/run-backend.sh",
+    "frontend": "npm --prefix frontend run dev",
+    "test": "cd backend && uv run pytest tests/ -q"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

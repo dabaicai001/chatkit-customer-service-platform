@@ -1,0 +1,38 @@
+[project]
+name = "customer-service-backend"
+version = "0.1.0"
+description = "通用客服平台后端:ChatKit Gateway + Jev 决策 + Qwen 生成 + RAG + 插件化 Tools"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.114.1,<0.116",
+    "httpx>=0.28,<0.29",
+    "uvicorn[standard]>=0.36,<0.37",
+    "openai>=1.40",
+    "openai-chatkit>=1.6.0,<1.7.0",
+    "openai-agents>=0.3.3,<0.4",
+    "pyyaml>=6.0,<7",
+    "mcp>=1.9,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.4,<0.7",
+    "mypy>=1.8,<2",
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<1",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

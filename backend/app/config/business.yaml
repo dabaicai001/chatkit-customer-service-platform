@@ -1,0 +1,186 @@
+# ============================================================
+# 通用客服平台 · 业务配置中心
+# 原则:不改代码,只改这个 YAML,就能换一家公司的客服
+# ============================================================
+
+company:
+  name: ABC科技
+  industry: ecommerce            # ecommerce / game / saas / logistics / finance ...
+
+customer_service:
+  name: 小A客服
+  language: zh-CN
+  greeting: 您好,我是小A,请问有什么可以帮您?
+  composer_placeholder: 输入你的问题,例如:我的订单到哪了?
+  escalation_note: 如需人工服务,直接说"转人工"即可
+
+# ---------------- 模型层 ----------------
+# decision = Jev(大脑里的"判断器");chat = Qwen(负责"把话说好"的人)
+# 两者是完全独立的槽位:各自的 provider / base_url / api_key 单独配置、互不影响。
+#
+# 每个槽位通过独立环境变量注入密钥(密钥不进仓库):
+#   Jev : JEV_PROVIDER / JEV_BASE_URL / JEV_API_KEY / JEV_MODEL
+#   Qwen: QWEN_PROVIDER / QWEN_BASE_URL / QWEN_API_KEY / QWEN_MODEL
+# 只要某个槽位没配 base_url/api_key,该槽位自动降级为 local(本地规则/模板兜底),
+# 所以整套系统零 Key 也能跑通;哪层先接入真实模型,就只配哪一层。
+models:
+  # Jev:意图识别 + 情绪 + 路由决策(小模型即可,如 openjev-qwen4b)
+  decision:
+    provider: ${JEV_PROVIDER:-openjev}
+    model: ${JEV_MODEL:-openjev-qwen4b}
+    base_url: ${JEV_BASE_URL:-}
+    api_key: ${JEV_API_KEY:-}
+    temperature: 0.1
+    timeout_seconds: 20
+  # Qwen:客服话术生成(大模型,如 qwen3.8-14b / qwen3.8-27b)
+  chat:
+    provider: ${QWEN_PROVIDER:-qwen}
+    model: ${QWEN_MODEL:-qwen3.8-14b}
+    base_url: ${QWEN_BASE_URL:-}
+    api_key: ${QWEN_API_KEY:-}
+    temperature: 0.6
+    timeout_seconds: 60
+  # 会话标题生成(可留空复用 chat 槽位逻辑,默认本地截断)
+  title:
+    provider: ${QWEN_PROVIDER:-qwen}
+    model: ${QWEN_MODEL:-qwen3.8-14b}
+    base_url: ${QWEN_BASE_URL:-}
+    api_key: ${QWEN_API_KEY:-}
+
+# ---------------- 知识库(RAG = 公司知识库) ----------------
+knowledge:
+  enabled: true
+  vector_store: memory           # memory = 纯 Python 零依赖 | chroma(预留)
+  top_k: 3
+  score_threshold: 0.05
+
+# ---------------- 侧栏面板(前端按配置动态渲染) ----------------
+panels:
+  - id: overview
+    label: 概览
+  - id: orders
+    label: 订单
+  - id: tickets
+    label: 工单
+
+# ---------------- 启用的工具(插件式,换行业只换这个列表) ----------------
+tools:
+  - search_customer
+  - get_order
+  - get_product
+  - query_knowledge
+  - create_ticket
+  - refund_order
+  - cancel_order
+  - transfer_to_human
+
+# ---------------- 意图目录(Jev 的判断范围) ----------------
+# action = 该意图命中的工具名;none = 直接对话,不调工具
+intents:
+  greet:
+    action: none
+    description: 打招呼/寒暄
+    keywords: [你好, 您好, 在吗, hi, hello, 在不在, 嗨]
+  order_query:
+    action: get_order
+    description: 查询订单状态/物流进度
+    keywords: [订单, 发货, 物流, 快递, 到哪, 多久到, 还没到, 配送, 签收]
+  refund_request:
+    action: refund_order
+    description: 申请退款/退货
+    keywords: [退款, 退钱, 退货, 退掉, 把钱退, 退回]
+  cancel_order:
+    action: cancel_order
+    description: 取消订单
+    keywords: [取消订单, 取消, 不想要了, 撤单]
+  product_query:
+    action: get_product
+    description: 咨询商品/产品信息(价格/规格/库存)
+    keywords: [产品, 商品, 多少钱, 价格, 规格, 参数, 有货, 库存, 优惠]
+  knowledge_query:
+    action: query_knowledge
+    description: 咨询通用问题/政策/售后规则(走 RAG 知识库)
+    keywords: [怎么, 如何, 政策, 规则, 保修, 保质期, 运费, 发票, 积分, 会员]
+  ticket_create:
+    action: create_ticket
+    description: 投诉/报修/建工单
+    keywords: [投诉, 工单, 报修, 坏了, 质量问题, 举报, 维权]
+  human_request:
+    action: transfer_to_human
+    description: 要求转人工客服
+    keywords: [人工, 人工客服, 找人, 电话客服, 真人, 活人]
+  fallback:
+    action: none
+    description: 无法识别,礼貌追问
+
+# ---------------- Jev 决策引擎参数(路由旋钮,全部可配) ----------------
+jev:
+  # 置信度分档:路由的核心旋钮
+  #   >= high        :直接执行业务工具
+  #   [low, high)    :执行业务工具,但提示 Qwen 回复需谨慎
+  #   <  low         :不执行业务工具,改走 fallback_action
+  confidence:
+    high: 0.85
+    low: 0.55
+  # 低置信度时的兜底动作:query_knowledge(查知识库)| transfer_to_human | none
+  fallback_action: query_knowledge
+  # 情绪 → 路由覆盖(命中即改道,优先于业务动作;填 none 表示不改道)
+  emotion_routing:
+    angry: transfer_to_human        # 愤怒 → 直接转人工
+    frustrated: transfer_to_human   # 沮丧 → 转人工
+    anxious: none                   # 焦虑 → 不改道,由 Qwen 话术安抚
+    happy: none
+    normal: none
+  # 模型调用重试(传输层失败时)
+  retry:
+    attempts: 2                     # 总尝试次数(含首次)
+    backoff_seconds: 0.5            # 每次重试前等待秒数
+
+# ---------------- 规则(安全/确认门槛) ----------------
+rules:
+  refund_order:
+    require_confirmation: true
+    confirmation_prompt: 确认要为订单 {order_id} 申请退款吗?退款将原路返回。
+  cancel_order:
+    require_confirmation: true
+    confirmation_prompt: 确认要取消订单 {order_id} 吗?
+  human_transfer:
+    enabled: true
+    queue_position: 1                 # 演示排队位;生产可接实时排队系统
+    queue_estimate: "约 2 分钟"
+
+# ---------------- MCP 数据面 ----------------
+# 平台不直连业务数据库:客户、订单、商品、工单等数据全部通过内嵌 MCP Client
+# 经 MCP 协议请求上游系统(CRM / OMS / 商品中心 / 工单系统)。
+# 换上游系统 = 改 servers 连接信息 + tool_mapping 映射,平台代码不动。
+mcp:
+  servers:
+    - name: crm
+      transport: http                    # http(Streamable HTTP,推荐)| stdio(子进程)
+      url: ${CRM_MCP_URL:-}
+      headers:
+        Authorization: Bearer ${CRM_MCP_TOKEN:-}
+      timeout_seconds: 30
+      # ---- stdio 传输示例(取消注释使用)----
+      # transport: stdio
+      # command: python
+      # args: ["app/integrations/reference/crm_mcp_server.py"]
+      # env:
+      #   CRM_DB_URL: ${CRM_DB_URL:-}
+
+  # 平台工具/数据读取 → 上游 MCP 工具映射
+  tool_mapping:
+    # 客服工具(Intent → 动作)
+    search_customer: crm.search_customer
+    get_order: crm.get_order
+    get_product: crm.get_product
+    create_ticket: crm.create_ticket
+    refund_order: crm.refund_order
+    cancel_order: crm.cancel_order
+    # 画像聚合(侧栏面板 / Jev 上下文注入)
+    get_customer: crm.get_customer
+    list_orders: crm.list_orders
+    list_tickets: crm.list_tickets
+
+  # 画像缓存(秒):0 = 每次实时回源;短 TTL 避免面板频繁打爆上游
+  profile_cache_seconds: 5
