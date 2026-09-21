@@ -77,10 +77,15 @@ export function CustomerContextPanel({
             客户信息
           </h2>
         </header>
-        <div className="flex flex-1 items-center justify-center">
-          <p className="max-w-xs text-center text-sm text-slate-500 dark:text-slate-400">
+        <div className="mt-5 flex-1 overflow-y-auto pr-1 space-y-6">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
             开始对话后,客服会自动识别客户身份并在此展示档案、订单与工单。
           </p>
+          <AgentDispatchPanel
+            agents={agents}
+            defaultAgent={defaultAgent}
+            dispatch={dispatch}
+          />
         </div>
       </section>
     );
