@@ -231,6 +231,32 @@ mcp:
 侧栏面板、启用工具、意图目录、Jev 路由参数、确认规则、转人工策略、MCP 连接与映射。
 前端启动时从 `/support/bootstrap` 拉取这套配置渲染,无需改前端代码。
 
+### 身份来源(真实环境如何拿到“用户是谁”)
+
+用户信息分两层,**来源不同**:
+
+| 层 | 内容 | 来源 | 方式 |
+|---|---|---|---|
+| 身份信号 | customer_id / 手机号 / token | 渠道或登录态(不来自 MCP) | 请求头传入,或对话内自述 |
+| 身份数据 | 档案、订单、工单 | 上游系统 | 全部走 MCP |
+
+因为 MCP 查询本身需要先知道 customer_id,所以“你是谁”必须从平台外部传入。
+三种真实接入方式:
+
+1. **已登录 Web/App(最常见)**:打开客服时带请求头,平台直接绑定 session,
+   用户无需自述身份,侧栏立即可见:
+   - `X-Customer-Id` — 直接传客户 ID(**生产推荐由网关注入**,客户端直传可伪造);
+   - `X-Customer-Phone` — 传手机号,平台经 MCP `search_customer` 解析;
+   - `X-Customer-Token` — 传令牌,平台经 MCP `resolve_token` 换客户 ID
+     (需在 `mcp.tool_mapping` 中配置 `resolve_token: crm.resolve_token` 才启用)。
+2. **第三方渠道(微信/WhatsApp/飞书)**:渠道回调带 openid/unionid,由渠道适配层
+   映射成 customer_id 后以同样方式传入。
+3. **匿名访客**:对话内自述(手机号/订单号),走 `search_customer` 路径——
+   即默认已实现的行为。
+
+请求头由 `server.py::_bind_identity_from_request` 处理,绑定后 Jev 的客户上下文、
+侧栏画像、后续工具调用全部自动就绪。
+
 ## 与原官方示例的差异
 
 | 维度 | 官方 customer-support | 本平台 |
@@ -243,6 +269,7 @@ mcp:
 | 组件 | 航班选择/餐食选择 | 通用选择列表/确认卡片(.widget 模板) |
 | 侧栏 | 航班/行程/会员 | 客户档案/订单/工单(面板按配置渲染) |
 | 配置 | 散落在代码 | business.yaml 配置中心 |
+| 身份 | thread 内写死种子客户 | 请求头/渠道/对话内识别三条路径,MCP 取数 |
 
 ## 已知边界
 

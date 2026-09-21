@@ -37,7 +37,7 @@ npm run dev
 # 后端单独
 cd backend && uv sync --extra dev && uv run uvicorn app.main:app --port 8001
 
-# 测试(36 个,不需要任何外部服务:mock LLM + 参考 MCP Server)
+# 测试(39 个,不需要任何外部服务:mock LLM + 参考 MCP Server)
 cd backend && uv run pytest tests/ -q
 
 # Lint
@@ -96,6 +96,14 @@ backend/app/
    五件套(见 `server.py::_respond_inner`),不要只发一个 done 事件。
 7. **前端零业务硬编码**:公司名/客服名/欢迎语/侧栏面板全部来自 `/support/bootstrap`,
    新增面板类型时前后端都要能 gracefully 处理未知 panel id。
+8. **身份信号与身份数据分离**:客户“是谁”(customer_id/手机号/token)来自渠道或
+   登录态,经请求头传入(`X-Customer-Id`/`X-Customer-Phone`/`X-Customer-Token`,
+   见 `server.py::_bind_identity_from_request`),不要在代码里写死客户;
+   “客户的资料/订单/工单”才走 MCP。匿名访客走对话内 `search_customer`。
+9. **ChatKit 图标名是封闭集合**(`ChatKitIcon`,见 `@openai/chatkit` 类型):
+   StartScreenPrompt 等的 icon 只能用集合内的值(package/truck/close 等不存在),
+   且类型必须用 `StartScreenPrompt` 而非放宽的 `{icon: string}`,否则构建不报错、
+   iframe 运行时白屏。
 
 ## 常见任务指南
 
@@ -132,7 +140,7 @@ backend/app/
 - `tests/mock_llm.py`:OpenAI 兼容 mock(按关键词确定性返回 Jev 决策/Qwen 流式/标题),
   测试与本地联调都用它,不依赖真实模型。
 - `tests/conftest.py`:生成测试配置(LLM 指向 mock,MCP 走 stdio 参考服务)。
-- `tests/test_pipeline.py`:端到端(respond 全链路、确认流程、情绪路由、fail-fast)。
+- `tests/test_pipeline.py`:端到端(respond 全链路、确认流程、情绪路由、身份请求头绑定、fail-fast)。
 - `tests/test_units.py`:Jev 解析、向量检索、Widget 模板、Policy、MCP 配置校验。
 
 **新增功能必须带测试**;改路由策略必须覆盖对应置信度分档/情绪分支。
