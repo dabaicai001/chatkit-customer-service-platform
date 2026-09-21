@@ -39,12 +39,14 @@ class ComposeContext:
     awaiting_confirmation: Optional[str] = None  # 确认卡片提示语
     handoff: Optional[Dict[str, Any]] = None
     history: str = ""
+    # 本次调度的专职 AGENT(人设提示词进系统提示;为空时用通用客服人设)
+    agent_title: str = ""
+    agent_instructions: str = ""
 
 
-_QWEN_SYSTEM_TEMPLATE = """你是{agent_name},{company_name}的在线客服。你的任务是把已经查证好的结果
-用自然、亲切、简洁的中文说给客户听。
+_QWEN_SYSTEM_TEMPLATE = """{persona_block}
 
-硬性规则:
+硬性规则(任何 AGENT 都适用):
 - 只能基于下方提供的「已查证信息」回答,禁止编造订单号、金额、政策细节。
 - 「已查证信息」中没有的内容,礼貌说明并建议客户提供更多信息或转人工。
 - 每次回复 2-4 句话,除非客户要求详细说明。
@@ -64,6 +66,11 @@ _QWEN_SYSTEM_TEMPLATE = """你是{agent_name},{company_name}的在线客服。�
 【对话历史】
 {history_block}
 """
+
+_DEFAULT_PERSONA = (
+    "你是{agent_name},{company_name}的在线客服。你的任务是把已经查证好的结果"
+    "用自然、亲切、简洁的中文说给客户听。"
+)
 
 
 class QwenComposer:
@@ -158,9 +165,19 @@ class QwenComposer:
     def _build_system_prompt(self, ctx: ComposeContext) -> str:
         profile_block = ctx.profile.summary_text() if ctx.profile else "尚未识别客户身份。"
         history_block = ctx.history or "(暂无历史)"
+        # AGENT 人设优先:配置了 instructions 用专职 AGENT 的,否则用通用客服人设
+        persona = ctx.agent_instructions.strip()
+        if not persona:
+            persona = _DEFAULT_PERSONA.format(
+                agent_name=self._config.agent_name,
+                company_name=self._config.company_name,
+            )
+        if ctx.agent_title:
+            persona = f"【当前 AGENT:{ctx.agent_title}】\n{persona}"
         return _QWEN_SYSTEM_TEMPLATE.format(
             agent_name=self._config.agent_name,
             company_name=self._config.company_name,
+            persona_block=persona,
             profile_block=profile_block,
             decision_block=ctx.decision_summary or "(无)",
             evidence_block=self._render_evidence(ctx),

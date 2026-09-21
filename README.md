@@ -12,7 +12,7 @@
                     │   通用客服聊天页面    │
                     └──────────┬──────────┘
                                ▲
-                               │ 流式文本 / Widget / 画像副作用
+                               │ 流式文本 / Widget / 画像 / AGENT 调度副作用
                     ┌──────────┴──────────┐
                     │  Customer Gateway   │  ← server.py(编排,不含业务规则)
                     └──────────┬──────────┘
@@ -28,39 +28,43 @@
         │  ① AI CHAT   │                  │ ② 人工客服   │
         │  AI 自己办成  │                  │ 转接排队接管  │
         └──────┬───────┘                  └──────────────┘
-               │ 内部三种办案手段
-    ┌──────────┼──────────┐
-    ▼          ▼          ▼
-┌────────┐ ┌────────┐ ┌──────────┐
-│  MCP   │ │  RAG   │ │ 直接回答  │
-│ 上游数据│ │公司知识库│ │(无需查证)│
-└───┬────┘ └───┬────┘ └──────────┘
-    │          │
-    └────┬─────┘
-         ▼
+               │ Jev 调度专职 AGENT(配置定义,见 agents 段)
+     ┌─────────┼──────────┬────────────┐
+     ▼         ▼          ▼            ▼
+┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐
+│ 订单客服 │ │ 商品顾问 │ │知识库客服 │ │ 通用客服 │ …
+│(MCP 取数)│ │(MCP 取数)│ │(RAG 检索)│ │(直接对话)│
+└────┬────┘ └────┬────┘ └────┬─────┘ └─────────┘
+     │           │           │
+     └─────┬─────┴───────────┘
+           ▼
 ┌─────────────────────────┐
 │  已查证信息(统一上下文)  │
-│  工具结果 + 知识库段落    │  ← ComposeContext(ai/qwen.py)
+│  工具结果 + 知识库段落    │  ← ComposeContext(ai/qwen.py,含 AGENT 人设
 └──────────┬──────────────┘
            ▼
     ┌──────────┐
-    │ 生成模型 │  ← ai/qwen.py(把话说好:流式生成客服话术)
+    │ 生成模型 │  ← ai/qwen.py(按 AGENT 人设把话说好:流式生成客服话术)
     └──────────┘
+
+   垃圾/无关信息(Jev 判定 intent=garbage):直接固化友好回复,不调工具、不过生成模型
 ```
 
 **最终出口只有两个**:
 
-1. **AI CHAT** — AI 把事办成:内部按需走 MCP 取数 / RAG 查知识 / 直接回答,
-   结果统一汇成「已查证信息」交给生成模型产出话术;
+1. **AI CHAT** — AI 把事办成:Jev 调度最合适的专职 AGENT,内部按需走 MCP 取数 /
+   RAG 查知识 / 直接回答,结果汇成「已查证信息」交给生成模型按该 AGENT 的人设产出话术;
 2. **人工客服** — 转接:用户明确要求、情绪愤怒、低置信度、或上游未暴露的
    变更类操作(退款/取消/建工单)时,由人工接管(转接提示语也由 AI 生成)。
 
-生成模型是 AI 出口内部各手段的汇合点——它不自己调 MCP/RAG,只负责
-“把已查证的事说好”。
+**专职 AGENT(配置驱动)**:`business.yaml` 的 `agents` 段定义每个 AGENT 的
+人设提示词、可用工具、是否查知识库;Jev 输出决策时指定 `agent`,前端右侧面板
+实时展示 Jev 的选择(`agent_dispatch/update` 副作用)。新增/调整 AGENT 只改 YAML。
 
 - **ChatKit = UI**:官方 SDK 串起聊天、流式、Widget、附件、听写,不重造轮子。
-- **Jev = 判断器**:小模型只输出结构化决策(意图/情绪/置信度/路由),不生成回答。
-- **生成模型 = 说话的人**:chat 槽位大模型基于已查证结果生成自然语言话术,流式返回。
+- **Jev = 判断器 + 调度员**:小模型输出结构化决策(意图/情绪/置信度/动作/AGENT),不生成回答。
+- **专职 AGENT = 办案小组**:订单/商品/知识库/售后/通用,配置驱动,Jev 调度。
+- **生成模型 = 说话的人**:chat 槽位大模型按 AGENT 人设、基于已查证结果生成话术,流式返回。
 - **MCP = 数据面**:客户/订单/商品/工单全部经内嵌 MCP Client 请求上游系统,平台不直连业务库。
 - **RAG = 公司知识库**:内置纯 Python 向量检索(可切换 chroma)。
 
@@ -231,6 +235,7 @@ curl http://<host>:8001/support/tools     # 确认 jev/chat 槽位显示真实 p
   "need_tool": true,
   "need_human": false,
   "action": "get_order",
+  "agent": "order_agent",
   "slots": {"order_id": "20260921001"},
   "reason": "用户在查订单物流"
 }
@@ -252,7 +257,65 @@ jev:
     backoff_seconds: 0.5
 ```
 
+### 专职 AGENT(ai/agents.py,配置驱动)
+
+AI CHAT 出口内部按职责细分多个专职 AGENT,Jev 决策时指定调度哪个。
+每个 AGENT 的完整定义在 `business.yaml` 的 `agents` 段——人设提示词、可用工具、
+是否查知识库全部可配,新增/调整只改 YAML:
+
+```yaml
+agents:
+  default: chat_agent                # Jev 无法判断时的兜底
+  order_agent:
+    title: 订单客服
+    description: 订单状态、物流进度查询      # 进 Jev 提示词,供其调度
+    instructions: |                   # 进生成模型系统提示词(人设/话术约束)
+      你是{agent_name},{company_name}的订单客服…
+    tools: [get_order, search_customer]
+    needs_rag: false
+  knowledge_agent:
+    title: 知识库客服
+    description: 政策、发票、保修等通用问题
+    instructions: 你是{agent_name},依据公司知识库回答…
+    tools: [query_knowledge]
+    needs_rag: true                   # 该 AGENT 处理时自动检索知识库
+```
+
+- **调度优先级**:Jev 指定的 `agent` > 意图目录里该意图的 `agent` 映射 > `agents.default`;
+- **生效方式**:AGENT 的 `instructions`(占位符 `{agent_name}`/`{company_name}`)替换通用
+  人设进入生成模型系统提示;`tools`/`needs_rag` 参与路由行为;
+- **前端可见**:`agent_dispatch/update` 副作用把「Jev 选择了哪个 AGENT + 意图/置信度/
+  情绪/判断依据」实时推到右侧面板,AGENT 列表来自 `/support/bootstrap`;
+- **运维可见**:`/support/tools` 返回全部 AGENT 定义与默认 AGENT。
+
+### 垃圾/无关信息直通
+
+意图目录里配了 `direct_reply` 的意图(默认的 `garbage` 意图即用于广告、骚扰、
+乱码、与业务无关的内容)走**直通通道**:Jev 判定后直接回复固化文案,
+**不调工具、不经过生成模型**(省钱且不让模型陪垃圾话)。文案支持
+`{agent_name}`/`{company_name}` 占位符:
+
+```yaml
+intents:
+  garbage:
+    action: none
+    agent: chat_agent
+    description: 垃圾信息或与业务无关的内容,直接友好回复
+    direct_reply: |
+      您好,我是{agent_name},只能为您解答订单、商品、售后相关的问题…
+```
+
 ### 通用路由器(core/routing.py)
+
+```
+decision.action
+   ├─ search_customer / get_order / get_product
+   │     → 经 MCP 请求上游系统
+   ├─ query_knowledge  → RAG 检索公司知识库
+   ├─ transfer_to_human→ 人工排队(rules.human_transfer)
+   ├─ direct_reply     → 垃圾/无关信息:固化文案直回,不过生成模型
+   └─ none             → 直接对话
+```
 
 ```
 decision.action

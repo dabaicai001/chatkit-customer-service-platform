@@ -9,11 +9,13 @@
 换一家公司的客服 = 改一个 YAML,不改业务代码。
 
 ```
-用户消息 → Jev 决策(意图/情绪/置信度)
+用户消息 → Jev 决策(意图/情绪/置信度/动作/AGENT)
         → 出口判定:① AI CHAT(AI 自己办成)或 ② 人工客服(转接)
-        → AI 出口内部:MCP 取数 / RAG 查知识 / 直接回答
-          → 结果汇成「已查证信息」→ 生成模型(chat 槽位)流式产出话术
-        → ChatKit 流式事件(文本增量 + Widget + 客户画像副作用)
+        → AI 出口内部:Jev 调度专职 AGENT(订单/商品/知识库/售后/通用,配置驱动)
+          → MCP 取数 / RAG 查知识 / 直接回答,汇成「已查证信息」
+          → 生成模型(chat 槽位)按 AGENT 人设流式产出话术
+        → 垃圾/无关信息(garbage 意图):固化文案直回,不过生成模型
+        → ChatKit 流式事件(文本增量 + Widget + 客户画像 + AGENT 调度副作用)
 ```
 
 ## 环境要求
@@ -45,7 +47,7 @@ npm run dev
 # 后端单独
 cd backend && uv sync --extra dev && uv run uvicorn app.main:app --port 8001
 
-# 测试(19 个纯离线单元测试,约 1 秒,不依赖任何外部服务)
+# 测试(28 个纯离线单元测试,约 1 秒,不依赖任何外部服务)
 cd backend && uv run pytest tests/ -q
 
 # Lint
@@ -66,13 +68,14 @@ backend/app/
 ├── core/
 │   ├── jev 无关,见 ai/
 │   ├── customer.py      客户域模型 + CustomerGateway(MCP 聚合,带缓存)
-│   ├── routing.py       ★ 通用路由器:意图 → MCP/RAG/人工/直接回答
+│   ├── routing.py       ★ 通用路由器:意图 → AGENT 调度 / MCP / RAG / 人工 / 固化直回
 │   ├── policy.py        ★ 路由策略:置信度分档/情绪路由/确认门槛(全配置驱动)
 │   ├── session.py       会话状态:身份绑定/流水/待确认动作(TTL)
 │   └── conversation.py  会话记忆(供 Jev/Qwen 上下文)
 ├── ai/
 │   ├── jev.py           ★ Jev 决策引擎(LLM,输出结构化 JSON,无本地降级)
-│   ├── qwen.py          ★ chat 槽位流式生成(SSE,基于已查证信息 grounding)
+│   ├── agents.py        ★ 专职 AGENT 注册表(配置驱动:人设/工具/是否查知识库)
+│   ├── qwen.py          ★ chat 槽位流式生成(SSE,基于已查证信息 + AGENT 人设)
 │   └── rag.py           RAG 编排
 ├── tools/               ★ 插件式工具层(pydantic 强校验 + MCP 映射)
 ├── knowledge/           FAQ 语料 + 向量检索(memory TF-IDF / chroma)
@@ -94,7 +97,8 @@ backend/app/
    (`{"result": str, "data": dict, "state_changed": bool}`),并在 business.yaml 的
    `tools` + `mcp.tool_mapping` 两处登记。
 5. **路由旋钮进 YAML,不写死在代码里**:置信度分档、兜底动作、情绪路由、确认规则、
-   转人工策略,全部在 `business.yaml` 的 `jev` / `rules` 段。
+   转人工策略,全部在 `business.yaml` 的 `jev` / `rules` 段;专职 AGENT(人设/工具/
+   是否查知识库)定义在 `agents` 段,意图到 AGENT 的映射在 `intents.<name>.agent`。
 6. **ChatKit 事件流式协议**:文本用 `ThreadItemAddedEvent` →
    `ContentPartAdded` → `TextDelta`* → `ContentPartDone` → `ThreadItemDoneEvent`
    五件套(见 `server.py::_respond_inner`),不要只发一个 done 事件。
@@ -124,7 +128,16 @@ backend/app/
 
 ### 加一个新意图
 
-只改 `business.yaml` 的 `intents` 段(action 指向已启用工具或 none),Jev 提示词自动生效。
+只改 `business.yaml` 的 `intents` 段:`action` 指向已启用工具或 none,`agent` 指向
+`agents` 段里的 AGENT(Jev 提示词自动生效);需要固化直回(如垃圾信息)时加
+`direct_reply` 字段(支持 {agent_name}/{company_name} 占位符)。
+
+### 加一个专职 AGENT(如 物流客服)
+
+只改 `business.yaml` 的 `agents` 段:title / description(进 Jev 提示词)/
+instructions(进生成模型系统提示,支持 {agent_name}/{company_name})/ tools /
+needs_rag;需要时把相关意图的 `agent` 指向它。代码零改动,前端侧栏与
+`/support/tools` 自动可见。
 
 ### 换一家公司/行业
 
@@ -146,7 +159,8 @@ backend/app/
 ## 测试基建
 
 - `tests/test_units.py`:唯一的测试文件,纯离线单元测试(约 1 秒):
-  Jev 输出解析与配置校验、向量检索、Widget 模板、Policy、MCP 客户端配置。
+  Jev 输出解析与配置校验(含 AGENT 字段)、AGENT 注册表与调度优先级、
+  Router 垃圾信息直通、向量检索、Widget 模板、Policy、MCP 客户端配置。
 - 按约定 #10,**不使用 mock 服务/ mock 数据做联调**;验证真实链路直接打
   真实 Jev/chat 端点 + 真实上游 MCP(配好 `.env` 三个 key 后 `npm run dev`,
   用 `/support/health`、`/support/tools` 自检)。

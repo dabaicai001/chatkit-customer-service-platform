@@ -6,6 +6,27 @@ export type PanelConfig = {
   label: string;
 };
 
+/** 专职 AGENT 配置(来自 business.yaml 的 agents 段) */
+export type AgentInfo = {
+  name: string;
+  title: string;
+  description: string;
+  tools: string[];
+  needs_rag: boolean;
+};
+
+/** Jev 本次调度的 AGENT(来自 agent_dispatch/update 副作用) */
+export type AgentDispatch = {
+  agent: string;
+  agent_title: string;
+  intent: string;
+  action: string;
+  confidence: number;
+  confidence_level: string;
+  emotion: string;
+  reason: string;
+};
+
 /** /support/bootstrap 返回的前端引导配置 */
 export type BootstrapConfig = {
   company: { name: string; industry: string };
@@ -16,6 +37,8 @@ export type BootstrapConfig = {
     composer_placeholder: string;
   };
   panels: PanelConfig[];
+  agents: AgentInfo[];
+  default_agent: string;
 };
 
 export const DEFAULT_BOOTSTRAP: BootstrapConfig = {
@@ -31,4 +54,6 @@ export const DEFAULT_BOOTSTRAP: BootstrapConfig = {
     { id: "orders", label: "订单" },
     { id: "tickets", label: "工单" },
   ],
+  agents: [],
+  default_agent: "",
 };

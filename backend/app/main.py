@@ -160,6 +160,10 @@ async def bootstrap_config(
             "composer_placeholder": config.composer_placeholder,
         },
         "panels": config.panels,
+        "agents": [
+            spec.to_dict() for spec in (server.jev.agents.get(name) for name in server.jev.agents.names())
+        ],
+        "default_agent": server.jev.agents.default_name,
     }
 
 
@@ -173,6 +177,10 @@ async def tools_debug(
     return {
         "enabled_tools": server.tools.enabled_names(),
         "tool_schemas": server.tools.schemas(),
+        "agents": [
+            spec.to_dict() for spec in (server.jev.agents.get(name) for name in server.jev.agents.names())
+        ],
+        "default_agent": server.jev.agents.default_name,
         "jev": {
             "confidence": {
                 "high": config.get("jev.confidence.high"),

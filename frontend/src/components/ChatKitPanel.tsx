@@ -4,6 +4,7 @@ import { useCallback, useRef } from "react";
 
 import type { CustomerProfile } from "../hooks/useCustomerContext";
 import type { ColorScheme } from "../hooks/useColorScheme";
+import type { AgentDispatch } from "../types/support";
 import {
   SUPPORT_CHATKIT_API_DOMAIN_KEY,
   SUPPORT_CHATKIT_API_URL,
@@ -20,6 +21,7 @@ type ChatKitPanelProps = {
   onThreadChange: (threadId: string | null) => void;
   onResponseCompleted: () => void;
   onProfileUpdate: (profile: CustomerProfile) => void;
+  onAgentDispatch?: (dispatch: AgentDispatch) => void;
   onWidgetActionComplete?: () => void;
   onChatKitReady?: (chatkit: ChatKitInstance) => void;
 };
@@ -32,6 +34,7 @@ export function ChatKitPanel({
   onThreadChange,
   onResponseCompleted,
   onProfileUpdate,
+  onAgentDispatch,
   onWidgetActionComplete,
   onChatKitReady,
 }: ChatKitPanelProps) {
@@ -60,9 +63,14 @@ export function ChatKitPanel({
         if (nextProfile) {
           onProfileUpdate(nextProfile);
         }
+      } else if (name === "agent_dispatch/update") {
+        const dispatch = data.dispatch as AgentDispatch | undefined;
+        if (dispatch) {
+          onAgentDispatch?.(dispatch);
+        }
       }
     },
-    [onProfileUpdate]
+    [onProfileUpdate, onAgentDispatch]
   );
 
   const chatkit = useChatKit({

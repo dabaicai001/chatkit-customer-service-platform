@@ -1,18 +1,18 @@
 """core/routing.py:通用路由器——整个系统的核心。
 
-Jev 只负责「决定做什么」,这里负责真正把请求分发出去:
+Jev 只负责「决定做什么、调度哪个 AGENT」,这里负责真正把请求分发出去:
 
     decision = jev.analyze(message)
     action = decision.action
+    agent = decision.agent(或按意图映射/默认兜底)
 
-    search_customer     -> MCP(crm.search_customer)      客户检索
-    get_order           -> MCP(crm.get_order)             订单查询
-    refund_order        -> policy 要求确认 -> 确认卡片 -> 确认后经 MCP 执行
+    search_customer     -> MCP 客户检索
+    get_order           -> MCP 订单查询
     query_knowledge     -> rag.search()                   公司知识库(RAG)
     transfer_to_human   -> 人工坐席队列                    转人工
-    none                -> 直接交给 Qwen 应答
+    none                -> 直接对话
 
-业务结果最终交给 Qwen 生成自然语言话术(见 ai/qwen.py)。
+业务结果与 AGENT 人设最终交给生成模型产出话术(见 ai/qwen.py)。
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..ai.agents import AgentRegistry, AgentSpec
 from ..ai.jev import Decision
 from ..ai.rag import RagService
 from ..core.customer import CustomerGateway
@@ -32,6 +33,27 @@ KNOWLEDGE_ACTION = "query_knowledge"
 SEARCH_CUSTOMER_ACTION = "search_customer"
 
 
+def resolve_agent(
+    decision: Decision,
+    intent_catalog: Dict[str, Any],
+    registry: AgentRegistry,
+) -> AgentSpec:
+    """AGENT 调度决策:Jev 指定 > 意图映射 > 默认 AGENT。"""
+
+    if decision.agent:
+        spec = registry.get(decision.agent)
+        if spec is not None:
+            return spec
+    intent_spec = intent_catalog.get(decision.intent)
+    if isinstance(intent_spec, dict):
+        mapped = str(intent_spec.get("agent", "") or "").strip()
+        if mapped:
+            spec = registry.get(mapped)
+            if spec is not None:
+                return spec
+    return registry.resolve(registry.default_name)
+
+
 @dataclass
 class RouteResult:
     """一次路由的产出,server 据此决定向 ChatKit 推什么。"""
@@ -39,6 +61,7 @@ class RouteResult:
     decision: Decision
     action: str = "none"
     confidence_level: str = "medium"  # high / medium / low
+    agent: Optional[AgentSpec] = None  # 本次调度的专职 AGENT
     tool_result: Optional[Dict[str, Any]] = None
     tool_error: Optional[str] = None
     passages: List[Dict[str, Any]] = field(default_factory=list)
@@ -46,11 +69,12 @@ class RouteResult:
     handoff: Optional[Dict[str, Any]] = None
     direct_answer: bool = False
     state_changed: bool = False
+    direct_reply: str = ""  # 固化直回文案(垃圾/无关信息;非空则不过生成模型)
     note: str = ""
 
 
 class Router:
-    """意图 → MCP 工具 / 知识库 / 人工 的通用分发器。"""
+    """意图 → AGENT / MCP 工具 / 知识库 / 人工 的通用分发器。"""
 
     def __init__(
         self,
@@ -59,12 +83,37 @@ class Router:
         gateway: CustomerGateway,
         sessions: SessionStateManager,
         policy: Policy,
+        agents: AgentRegistry,
+        intent_catalog: Optional[Dict[str, Any]] = None,
+        config: Optional[Any] = None,
     ) -> None:
         self.tools = tools
         self.rag = rag
         self.gateway = gateway
         self.sessions = sessions
         self.policy = policy
+        self.agents = agents
+        self.intent_catalog = intent_catalog or {}
+        self._config = config
+
+    def _resolve_direct_reply(self, decision: Decision) -> str:
+        """意图配置了 direct_reply 时返回固化文案(垃圾/无关信息直通,不过生成模型)。"""
+
+        spec = self.intent_catalog.get(decision.intent)
+        if not isinstance(spec, dict):
+            return ""
+        template = str(spec.get("direct_reply", "") or "").strip()
+        if not template:
+            return ""
+        if self._config is not None:
+            try:
+                return template.format(
+                    agent_name=self._config.agent_name,
+                    company_name=self._config.company_name,
+                )
+            except (KeyError, IndexError):
+                return template
+        return template
 
     # ------------------------------------------------------------- 主入口
     async def route(
@@ -73,6 +122,8 @@ class Router:
         thread_id: str,
         message: str,
     ) -> RouteResult:
+        # 0) AGENT 调度(Jev 指定 > 意图映射 > 默认)
+        agent = resolve_agent(decision, self.intent_catalog, self.agents)
         action = decision.action or "none"
 
         # 1) 情绪路由覆盖(如 angry → 转人工),优先于业务动作
@@ -102,19 +153,36 @@ class Router:
         if action not in ("none", HUMAN_ACTION) and not self.tools.is_enabled(action):
             action = KNOWLEDGE_ACTION if decision.need_rag else "none"
 
-        result = RouteResult(decision=decision, action=action, confidence_level=level)
+        result = RouteResult(
+            decision=decision, action=action, confidence_level=level, agent=agent
+        )
 
         # ------------------------------------------------ 转人工
         if action == HUMAN_ACTION:
             if self.policy.human_transfer_enabled:
-                result.handoff = await self._transfer_human(thread_id, decision, message)
+                try:
+                    result.handoff = await self._transfer_human(thread_id, decision, message)
+                except Exception as exc:  # 转人工失败不当成会话崩溃,交生成模型说明
+                    result.tool_error = f"转人工失败:{exc}"
+                    result.direct_answer = True
+                    self.sessions.log(thread_id, f"转人工失败:{exc}", kind="error")
             else:
                 result.direct_answer = True
                 result.note = "人工坐席当前未开启,由 AI 继续服务。"
             return result
 
-        # ------------------------------------------------ 知识库
-        if action == KNOWLEDGE_ACTION or decision.need_rag:
+        # ------------------------------------------------ 垃圾/无关信息直通
+        # Jev 已判定为垃圾或与业务无关:直接友好回复,不调工具、不过生成模型
+        direct_reply = self._resolve_direct_reply(decision)
+        if direct_reply:
+            result.direct_answer = True
+            result.direct_reply = direct_reply
+            result.note = "垃圾/无关信息,直接友好回复(不过生成模型)。"
+            self.sessions.log(thread_id, f"垃圾信息直回:{decision.reason or decision.intent}", kind="info")
+            return result
+
+        # ------------------------------------------------ 知识库(动作指定 / Jev 要求 / AGENT 要求)
+        if action == KNOWLEDGE_ACTION or decision.need_rag or agent.needs_rag:
             query = str(decision.slots.get("query") or message)
             result.passages = await self.rag.search(query)
             if action == KNOWLEDGE_ACTION:

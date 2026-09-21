@@ -13,6 +13,7 @@ import {
 } from "../lib/config";
 import {
   DEFAULT_BOOTSTRAP,
+  type AgentDispatch,
   type BootstrapConfig,
   type SupportView,
 } from "../types/support";
@@ -26,6 +27,7 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [chatkit, setChatkit] = useState<ChatKitInstance | null>(null);
   const [bootstrap, setBootstrap] = useState<BootstrapConfig>(DEFAULT_BOOTSTRAP);
+  const [dispatch, setDispatch] = useState<AgentDispatch | null>(null);
   const { profile, loading, error, refresh, setProfile } =
     useCustomerContext(threadId);
 
@@ -61,6 +63,7 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
 
   const handleThreadChange = useCallback((nextThreadId: string | null) => {
     setThreadId(nextThreadId);
+    setDispatch(null); // 切换会话清空调度展示
   }, []);
 
   const handleResponseCompleted = useCallback(() => {
@@ -77,6 +80,10 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
     },
     [setProfile]
   );
+
+  const handleAgentDispatch = useCallback((next: AgentDispatch) => {
+    setDispatch(next);
+  }, []);
 
   const greeting = bootstrap.customer_service.greeting;
   const startScreen = useMemo(
@@ -101,7 +108,7 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
             </h1>
             <p className="max-w-3xl text-sm text-slate-600 dark:text-slate-300">
               左侧与{bootstrap.customer_service.name}对话,右侧实时同步客户档案、订单与工单。
-              Jev 负责理解意图并调度工具,{bootstrap.customer_service.name}负责把话说好。
+              Jev 负责理解意图并调度专职 AGENT 与工具,生成模型负责把话说好。
             </p>
           </div>
           <ThemeToggle value={scheme} onChange={onThemeChange} />
@@ -118,6 +125,7 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
                 onThreadChange={handleThreadChange}
                 onResponseCompleted={handleResponseCompleted}
                 onProfileUpdate={handleProfileEffect}
+                onAgentDispatch={handleAgentDispatch}
                 onWidgetActionComplete={handleWidgetActionComplete}
                 onChatKitReady={setChatkit}
               />
@@ -131,6 +139,9 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
             panels={panels}
             view={view}
             onViewChange={setView}
+            agents={bootstrap.agents}
+            defaultAgent={bootstrap.default_agent}
+            dispatch={dispatch}
           />
         </div>
       </div>

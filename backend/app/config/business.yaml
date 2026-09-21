@@ -75,52 +75,128 @@ tools:
 
 # ---------------- 意图目录(Jev 的判断范围) ----------------
 # action = 该意图命中的工具名;none = 直接对话,不调工具
+# agent = 该意图默认调度的专职 AGENT(Jev 可直接指定 agent,未指定时按这里兜底)
 intents:
   greet:
     action: none
+    agent: chat_agent
     description: 打招呼/寒暄
     keywords: [你好, 您好, 在吗, hi, hello, 在不在, 嗨]
   customer_identify:
     action: search_customer
+    agent: chat_agent
     description: 客户表明身份(姓名/手机号/客户ID),先检索确认身份
     keywords: [我是, 手机号, 姓名, 查客户, 账号]
   order_query:
     action: get_order
+    agent: order_agent
     description: 查询订单状态/物流进度
     keywords: [订单, 发货, 物流, 快递, 到哪, 多久到, 还没到, 配送, 签收]
   refund_request:
     action: transfer_to_human
+    agent: aftersale_agent
     description: 申请退款/退货(上游未暴露退款工具,转人工办理)
     keywords: [退款, 退钱, 退货, 退掉, 把钱退, 退回]
   cancel_order:
     action: transfer_to_human
+    agent: aftersale_agent
     description: 取消订单(上游未暴露取消工具,转人工办理)
     keywords: [取消订单, 取消, 不想要了, 撤单]
   product_query:
     action: get_product
+    agent: product_agent
     description: 咨询商品/产品信息(价格/规格/库存)
     keywords: [产品, 商品, 多少钱, 价格, 规格, 参数, 有货, 库存, 优惠]
   knowledge_query:
     action: query_knowledge
+    agent: knowledge_agent
     description: 咨询通用问题/政策/售后规则(走 RAG 知识库)
     keywords: [怎么, 如何, 政策, 规则, 保修, 保质期, 运费, 发票, 积分, 会员]
   ticket_create:
     action: transfer_to_human
+    agent: aftersale_agent
     description: 投诉/报修(上游未暴露工单工具,转人工登记)
     keywords: [投诉, 工单, 报修, 坏了, 质量问题, 举报, 维权]
   human_request:
     action: transfer_to_human
+    agent: chat_agent
     description: 要求转人工客服
     keywords: [人工, 人工客服, 找人, 电话客服, 真人, 活人]
+  garbage:
+    action: none
+    agent: chat_agent
+    description: 垃圾信息或与业务无关的内容(广告、骚扰、乱码、测试字符、无意义闲聊),直接友好回复,不调工具也不过生成模型
+    keywords: [广告, 骚扰, 乱码, 测试, 无关, 刷屏]
+    # 固化直回文案(支持 {agent_name}/{company_name} 占位符);配了就走直通通道
+    direct_reply: |
+      您好,我是{agent_name},只能为您解答订单、商品、售后相关的问题。如需帮助,请直接描述您的问题,我会尽快为您处理。
   fallback:
     action: none
+    agent: chat_agent
     description: 无法识别,礼貌追问
+
+# ---------------- 专职 AGENT 目录(AI CHAT 出口内部,由 Jev 调度) ----------------
+# 每个 AGENT = 人设提示词(instructions)+ 可用工具 + 是否查知识库。
+# Jev 按用户意图选择最合适的 AGENT;新增/调整 AGENT 只改这里,代码不动。
+# instructions 支持占位符:{agent_name}(客服名)、{company_name}(公司名)。
+agents:
+  default: chat_agent                # Jev 无法判断时的兜底 AGENT
+  chat_agent:
+    title: 通用客服
+    description: 寒暄接待、身份确认、无法归类的一般性问题
+    instructions: |
+      你是{agent_name},{company_name}的通用客服。负责日常接待与一般性问题:
+      - 语气亲切简洁,先确认客户需求再行动;
+      - 客户表明身份时,引导提供手机号或客户ID以便核实;
+      - 不确定的问题不要编造,建议客户转人工。
+    tools: [search_customer]
+    needs_rag: false
+  order_agent:
+    title: 订单客服
+    description: 订单状态、物流进度、履约信息查询
+    instructions: |
+      你是{agent_name},{company_name}的订单客服。处理订单与物流相关咨询:
+      - 基于已查证信息中的订单数据回答,突出订单号、状态、金额、时间;
+      - 物流进度要说明当前环节与预计时间,没有数据就说"暂未查询到";
+      - 客户要改地址/取消/退款等变更操作时,说明需转人工办理并引导转接。
+    tools: [get_order, search_customer]
+    needs_rag: false
+  product_agent:
+    title: 商品顾问
+    description: 商品信息、价格、库存、规格咨询
+    instructions: |
+      你是{agent_name},{company_name}的商品顾问。回答商品相关咨询:
+      - 基于已查证信息中的商品数据回答,突出名称、价格(如有)、销售状态;
+      - 库存/规格以查询结果为准,不承诺没有查到的信息;
+      - 可适当补充商品的一般性卖点,但不得虚构参数。
+    tools: [get_product]
+    needs_rag: false
+  knowledge_agent:
+    title: 知识库客服
+    description: 退款政策、发票、保修、运费、会员规则等通用问题解答
+    instructions: |
+      你是{agent_name},{company_name}的知识库客服。依据公司知识库回答通用规则问题:
+      - 只根据「已查证信息」中的知识库段落作答,并说明依据;
+      - 知识库没有覆盖的问题,明确告知"需要确认"并建议转人工,严禁编造政策;
+      - 回答分段清晰,涉及数字(天数/比例/金额)务必与知识库一致。
+    tools: [query_knowledge]
+    needs_rag: true
+  aftersale_agent:
+    title: 售后客服
+    description: 退款/取消/投诉等售后诉求(当前转人工办理)
+    instructions: |
+      你是{agent_name},{company_name}的售后客服。处理退款、取消、投诉等售后诉求:
+      - 先安抚客户情绪,确认诉求涉及的订单;
+      - 当前售后变更操作由人工办理,清晰告知将为其转接人工客服;
+      - 不要承诺具体退款到账时间,以人工客服答复为准。
+    tools: []
+    needs_rag: false
 
 # ---------------- Jev 决策引擎参数(路由旋钮,全部可配) ----------------
 jev:
   # 置信度分档:路由的核心旋钮
   #   >= high        :直接执行业务工具
-  #   [low, high)    :执行业务工具,但提示 Qwen 回复需谨慎
+  #   [low, high)    :执行业务工具,但提示生成模型回复需谨慎
   #   <  low         :不执行业务工具,改走 fallback_action
   confidence:
     high: 0.85

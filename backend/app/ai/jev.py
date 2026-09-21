@@ -33,6 +33,7 @@ import httpx
 
 from ..config import BusinessConfig
 from ..core.policy import Policy
+from .agents import AgentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class Decision:
     need_tool: bool = False
     need_human: bool = False
     action: str = "none"
+    agent: str = ""  # 调度哪个专职 AGENT(AI CHAT 出口内部)
     slots: Dict[str, Any] = field(default_factory=dict)
     reason: str = ""
     source: str = "llm"
@@ -63,11 +65,14 @@ class Decision:
         return asdict(self)
 
 
-_JEV_SYSTEM_PROMPT = """你是客服系统的意图决策引擎 Jev,只负责"判断",不负责"回答"。
+_JEV_SYSTEM_PROMPT = """你是客服系统的意图决策引擎 Jev,只负责"判断与调度",不负责"回答"。
 分析用户最新消息,结合对话历史与客户资料,输出一个 JSON 决策对象。
 
 可用意图(intent → action → 说明):
 {intent_lines}
+
+可调度的专职 AGENT(AI CHAT 出口内部,按职责选择最合适的一个):
+{agent_lines}
 
 输出要求(只输出 JSON,不要输出任何其他文字):
 {{
@@ -79,15 +84,18 @@ _JEV_SYSTEM_PROMPT = """你是客服系统的意图决策引擎 Jev,只负责"�
   "need_tool": true/false,
   "need_human": true/false,
   "action": "上面列出的 action 之一,不需要工具时填 none",
+  "agent": "上面列出的 AGENT 名之一(必须选一个)",
   "slots": {{"order_id": "订单号,没有则填空字符串", "query": "检索用的问题改写"}},
   "reason": "一句话说明判断依据"
 }}
 
 规则:
 - action 只能使用意图目录里出现的 action 或 none,禁止编造。
+- agent 只能使用 AGENT 目录里出现的名字,禁止编造;无法归类时选默认 AGENT({default_agent})。
 - 用户消息中出现 8 位以上数字(订单号)时,必须填入 slots.order_id。
 - 咨询公司政策、售后规则、发票、物流时效等通用问题时 need_rag=true 且 action=query_knowledge。
 - 用户明确要求找人工/真人客服时 action=transfer_to_human。
+- 广告、骚扰、乱码、测试字符、与业务完全无关的无意义内容:intent 填 garbage,action 填 none。
 - 用户表达愤怒、威胁投诉时 emotion=angry 或 frustrated,并设 need_human=true。
 - 置信度不确定时填低一点(<=0.5),系统会走知识库兜底。"""
 
@@ -100,14 +108,21 @@ class JevDecisionEngine:
         self._cfg = config.require_model("decision")  # 缺失直接 ConfigurationError
         self._policy = Policy(config)
         self._intents = config.intent_catalog or {}
+        self._agents = AgentRegistry(config)
         self._known_actions = self._collect_known_actions()
         logger.info(
-            "Jev 决策引擎就绪(provider=%s, model=%s, 置信度分档 low=%.2f/high=%.2f)。",
+            "Jev 决策引擎就绪(provider=%s, model=%s, 置信度分档 low=%.2f/high=%.2f, "
+            "可调度 AGENT=%s)。",
             self._cfg["provider"],
             self._cfg["model"],
             self._policy.confidence_bands().low,
             self._policy.confidence_bands().high,
+            "/".join(self._agents.names()),
         )
+
+    @property
+    def agents(self) -> AgentRegistry:
+        return self._agents
 
     def _collect_known_actions(self) -> set[str]:
         actions = {
@@ -137,9 +152,10 @@ class JevDecisionEngine:
                 content = await self._call_llm(message, history, customer_summary)
                 decision = self._parse_decision(content)
                 logger.info(
-                    "Jev 决策:intent=%s action=%s confidence=%.2f emotion=%s(%s)",
+                    "Jev 决策:intent=%s action=%s agent=%s confidence=%.2f emotion=%s(%s)",
                     decision.intent,
                     decision.action,
+                    decision.agent or "(未指定,路由兜底)",
                     decision.confidence,
                     decision.emotion,
                     decision.reason,
@@ -161,7 +177,11 @@ class JevDecisionEngine:
             for name, spec in self._intents.items()
             if isinstance(spec, dict)
         )
-        system = _JEV_SYSTEM_PROMPT.format(intent_lines=intent_lines or "(无)")
+        system = _JEV_SYSTEM_PROMPT.format(
+            intent_lines=intent_lines or "(无)",
+            agent_lines=self._agents.catalog_text(),
+            default_agent=self._agents.default_name,
+        )
 
         user_parts = []
         if customer_summary:
@@ -229,12 +249,28 @@ class JevDecisionEngine:
             need_tool=bool(raw.get("need_tool", False)),
             need_human=bool(raw.get("need_human", False)),
             action=action,
+            agent=self._normalize_agent(raw.get("agent")),
             slots={str(k): v for k, v in slots.items()},
             reason=str(raw.get("reason", "") or ""),
             source="llm",
         )
         decision.need_tool = decision.action != "none"
         return decision
+
+    def _normalize_agent(self, value: Any) -> str:
+        """校验 Jev 返回的 AGENT 名;不存在时置空(由 Router 按意图/默认兜底)。"""
+
+        name = str(value or "").strip()
+        if not name:
+            return ""
+        if self._agents.get(name) is None:
+            logger.warning(
+                "Jev 返回了未注册的 AGENT:%r(已注册:%s),置空由路由兜底。",
+                name,
+                "/".join(self._agents.names()),
+            )
+            return ""
+        return name
 
     @staticmethod
     def _loads_decision_json(content: str) -> Dict[str, Any] | None:

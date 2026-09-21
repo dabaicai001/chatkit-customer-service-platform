@@ -2,7 +2,8 @@ import { Mail, Phone } from "lucide-react";
 import clsx from "clsx";
 
 import type { CustomerProfile } from "../hooks/useCustomerContext";
-import type { PanelConfig, SupportView } from "../types/support";
+import type { AgentDispatch, AgentInfo, PanelConfig, SupportView } from "../types/support";
+import { AgentDispatchPanel } from "./customer-context/AgentDispatchPanel";
 import { OverviewView } from "./customer-context/OverviewView";
 import { OrdersView } from "./customer-context/OrdersView";
 import { TicketsView } from "./customer-context/TicketsView";
@@ -15,6 +16,11 @@ type CustomerContextPanelProps = {
   panels: PanelConfig[];
   view: SupportView;
   onViewChange: (view: SupportView) => void;
+  /** 专职 AGENT 列表与默认 AGENT(来自后端 bootstrap) */
+  agents: AgentInfo[];
+  defaultAgent: string;
+  /** Jev 本次调度的 AGENT */
+  dispatch: AgentDispatch | null;
 };
 
 const PANEL_CLASS =
@@ -28,6 +34,9 @@ export function CustomerContextPanel({
   panels,
   view,
   onViewChange,
+  agents,
+  defaultAgent,
+  dispatch,
 }: CustomerContextPanelProps) {
   if (loading && !profile) {
     return (
@@ -140,7 +149,14 @@ export function CustomerContextPanel({
   return (
     <section className={PANEL_CLASS}>
       {headerContent}
-      <div className="mt-5 flex-1 overflow-y-auto pr-1 space-y-6">{bodyContent}</div>
+      <div className="mt-5 flex-1 overflow-y-auto pr-1 space-y-6">
+        {bodyContent}
+        <AgentDispatchPanel
+          agents={agents}
+          defaultAgent={defaultAgent}
+          dispatch={dispatch}
+        />
+      </div>
     </section>
   );
 }

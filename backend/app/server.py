@@ -69,6 +69,7 @@ from .widgets import (
 logger = logging.getLogger(__name__)
 
 PROFILE_EFFECT_NAME = "customer_profile/update"
+AGENT_DISPATCH_EFFECT_NAME = "agent_dispatch/update"
 MAX_HISTORY_ITEMS = 20
 
 
@@ -93,7 +94,18 @@ def create_chatkit_server(config: BusinessConfig) -> "CustomerServiceServer":
     from .core.policy import Policy
 
     policy = Policy(config)
-    router = Router(tools=tools, rag=rag, gateway=gateway, sessions=sessions, policy=policy)
+    agents = jev.agents
+    agents.validate(tools.enabled_names())
+    router = Router(
+        tools=tools,
+        rag=rag,
+        gateway=gateway,
+        sessions=sessions,
+        policy=policy,
+        agents=agents,
+        intent_catalog=config.intent_catalog,
+        config=config,
+    )
 
     store = MemoryStore()
     attachment_store = LocalAttachmentStore(store)
@@ -111,10 +123,11 @@ def create_chatkit_server(config: BusinessConfig) -> "CustomerServiceServer":
         gateway=gateway,
     )
     logger.info(
-        "客服平台装配完成:公司=%s 客服=%s 已启用工具=%s",
+        "客服平台装配完成:公司=%s 客服=%s 已启用工具=%s 已注册 AGENT=%s",
         config.company_name,
         config.agent_name,
         ",".join(tools.enabled_names()),
+        ",".join(agents.names()),
     )
     return server
 
@@ -223,8 +236,11 @@ class CustomerServiceServer(ChatKitServer[dict[str, Any]]):
         )
         self.memory.remember_decision(thread.id, decision.to_dict())
 
-        # 3) 路由分发
+        # 3) 路由分发(含 AGENT 调度)
         route = await self.router.route(decision, thread.id, message_text)
+
+        # 3.1) AGENT 调度事件推送给前端侧栏(展示 Jev 选择了哪个 AGENT)
+        yield self._agent_dispatch_effect(route)
 
         # 4) 需要确认 → 先弹确认卡片
         if route.awaiting_confirmation is not None:
@@ -232,7 +248,17 @@ class CustomerServiceServer(ChatKitServer[dict[str, Any]]):
                 yield event
             return
 
-        # 5) Qwen 流式生成
+        # 4.1) 垃圾/无关信息直通:Jev 已判定,直接友好回复,不经过生成模型
+        if route.direct_reply:
+            yield ThreadItemDoneEvent(
+                item=self._assistant_message(thread, route.direct_reply, context)
+            )
+            self.memory.add_turn(thread.id, "user", message_text)
+            self.memory.add_turn(thread.id, "assistant", route.direct_reply)
+            await self._record_hidden_context(thread, decision, route, context)
+            return
+
+        # 5) 生成模型流式输出
         compose_context = await self._build_compose_context(thread.id, message_text, route, profile)
         item_id = self.store.generate_item_id("message", thread, context)
         yield ThreadItemAddedEvent(
@@ -535,8 +561,10 @@ class CustomerServiceServer(ChatKitServer[dict[str, Any]]):
     ) -> ComposeContext:
         decision = route.decision
         bands_level = route.confidence_level
+        agent = route.agent
         decision_summary = (
             f"意图={decision.intent} 动作={route.action} "
+            f"AGENT={agent.title if agent else '-'}({agent.name if agent else '-'}) "
             f"置信度={decision.confidence:.2f}({bands_level}) 情绪={decision.emotion} "
             f"判断依据={decision.reason or '-'}"
         )
@@ -556,6 +584,42 @@ class CustomerServiceServer(ChatKitServer[dict[str, Any]]):
             ),
             handoff=route.handoff,
             history=self.memory.transcript(thread_id),
+            agent_title=agent.title if agent else "",
+            agent_instructions=self._render_agent_instructions(agent),
+        )
+
+    def _render_agent_instructions(self, agent: Any) -> str:
+        """渲染 AGENT 人设提示词(占位符:agent_name/company_name)。"""
+
+        if agent is None or not agent.instructions:
+            return ""
+        try:
+            return agent.instructions.format(
+                agent_name=self.config.agent_name,
+                company_name=self.config.company_name,
+            ).strip()
+        except (KeyError, IndexError):
+            return agent.instructions.strip()
+
+    def _agent_dispatch_effect(self, route: RouteResult) -> ClientEffectEvent:
+        """AGENT 调度事件:前端侧栏展示 Jev 选择了哪个 AGENT。"""
+
+        agent = route.agent
+        decision = route.decision
+        return ClientEffectEvent(
+            name=AGENT_DISPATCH_EFFECT_NAME,
+            data={
+                "dispatch": {
+                    "agent": agent.name if agent else "",
+                    "agent_title": agent.title if agent else "",
+                    "intent": decision.intent,
+                    "action": route.action,
+                    "confidence": round(decision.confidence, 2),
+                    "confidence_level": route.confidence_level,
+                    "emotion": decision.emotion,
+                    "reason": decision.reason or "",
+                }
+            },
         )
 
     async def _record_hidden_context(
