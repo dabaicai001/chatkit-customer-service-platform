@@ -5,13 +5,14 @@
 
 ## 一句话
 
-通用客服平台:**ChatKit 管 UI,Jev 管判断,Qwen 管表达,MCP 管数据,business.yaml 管配置**。
+通用客服平台:**ChatKit 管 UI,Jev 管判断,生成模型管表达,MCP 管数据,business.yaml 管配置**。
 换一家公司的客服 = 改一个 YAML,不改业务代码。
 
 ```
 用户消息 → Jev 决策(意图/情绪/置信度)
-        → Router 分发(MCP 工具 / RAG 知识库 / 人工 / 直接回答)
-        → Qwen 流式生成客服话术
+        → 出口判定:① AI CHAT(AI 自己办成)或 ② 人工客服(转接)
+        → AI 出口内部:MCP 取数 / RAG 查知识 / 直接回答
+          → 结果汇成「已查证信息」→ 生成模型(chat 槽位)流式产出话术
         → ChatKit 流式事件(文本增量 + Widget + 客户画像副作用)
 ```
 
@@ -22,16 +23,18 @@
 
 | 变量 | 说明 |
 |---|---|
-| `JEV_PROVIDER` / `JEV_BASE_URL` / `JEV_API_KEY` / `JEV_MODEL` | Jev 决策模型(OpenAI 兼容端点) |
-| `QWEN_PROVIDER` / `QWEN_BASE_URL` / `QWEN_API_KEY` / `QWEN_MODEL` | Qwen 生成模型 |
-| `CRM_MCP_URL` / `CRM_MCP_TOKEN` | MCP 数据面(上游 CRM/OMS/工单系统) |
+| `JEV_PROVIDER` / `JEV_BASE_URL` / `JEV_API_KEY` / `JEV_MODEL` | Jev 决策模型(OpenAI 兼容端点;business.yaml 默认 https://api.typesafe.ai/v1/systemone) |
+| `CHAT_PROVIDER` / `CHAT_BASE_URL` / `CHAT_API_KEY` / `CHAT_MODEL` | 话术生成模型(**不绑厂商**;默认 MiniMax https://api.minimax.cn/v1 / MiniMax-M3) |
+| `UPSTREAM_MCP_URL` / `UPSTREAM_MCP_TOKEN` | MCP 数据面(上游业务系统 MCP,默认 http://127.0.0.1:9003/mcp) |
 
-Jev 与 Qwen 是两个独立槽位,key 分开配置、互不影响(见 `backend/app/config/business.yaml` 的 `models` 段)。
+Jev 与 chat 是两个独立槽位,key 分开配置、互不影响(见 `backend/app/config/business.yaml` 的 `models` 段)。
 
 **密钥输入位置:只有环境变量**(模板见 `backend/.env.example` / `frontend/.env.example`,
-真实 `.env` 已被 git 忽略)。启动脚本 `backend/scripts/run-backend.sh`(bash)或
-`run-backend.ps1`(Windows)会自动加载 `backend/.env`;也可用 `uv run --env-file`、
-Docker `--env-file`、K8s Secret 等平台注入方式,优先级高于 .env。缺失即拒绝启动。
+真实 `.env` 已被 git 忽略)。接入只需填 3 个值:`JEV_API_KEY`、`CHAT_API_KEY`、
+`UPSTREAM_MCP_TOKEN`(其余在 business.yaml 均有默认值)。启动脚本
+`backend/scripts/run-backend.sh`(bash)或 `run-backend.ps1`(Windows)会自动加载
+`backend/.env`;也可用 `uv run --env-file`、Docker `--env-file`、K8s Secret 等平台
+注入方式,优先级高于 .env。缺失即拒绝启动。
 
 ## 常用命令
 
@@ -42,7 +45,7 @@ npm run dev
 # 后端单独
 cd backend && uv sync --extra dev && uv run uvicorn app.main:app --port 8001
 
-# 测试(39 个,不需要任何外部服务:mock LLM + 参考 MCP Server)
+# 测试(19 个纯离线单元测试,约 1 秒,不依赖任何外部服务)
 cd backend && uv run pytest tests/ -q
 
 # Lint
@@ -50,9 +53,6 @@ cd backend && uv run ruff check app/ tests/
 
 # 前端构建
 cd frontend && npm install && npm run build
-
-# 参考上游 MCP Server(契约示例 + 本地调试)
-python backend/app/integrations/reference/crm_mcp_server.py --http --port 9001
 ```
 
 ## 目录导览(先读这些文件)
@@ -72,13 +72,12 @@ backend/app/
 │   └── conversation.py  会话记忆(供 Jev/Qwen 上下文)
 ├── ai/
 │   ├── jev.py           ★ Jev 决策引擎(LLM,输出结构化 JSON,无本地降级)
-│   ├── qwen.py          ★ Qwen 流式生成(SSE,基于已查证信息 grounding)
+│   ├── qwen.py          ★ chat 槽位流式生成(SSE,基于已查证信息 grounding)
 │   └── rag.py           RAG 编排
 ├── tools/               ★ 插件式工具层(pydantic 强校验 + MCP 映射)
 ├── knowledge/           FAQ 语料 + 向量检索(memory TF-IDF / chroma)
 ├── integrations/
-│   ├── mcp.py           ★★ 内嵌 MCP Client(http/stdio、重连、结果归一化)
-│   └── reference/crm_mcp_server.py  参考上游实现(契约 + 测试替身)
+│   └── mcp.py           ★★ 内嵌 MCP Client(http/stdio、重连、结果归一化)
 └── widgets/             通用 Widget 模板(选择列表 / 确认卡片)
 ```
 
@@ -87,10 +86,10 @@ backend/app/
 1. **业务数据一律走 MCP**。不要在 `core/` 里写死任何行业逻辑(订单/航班/座位/餐食都不行)。
    平台通过 `integrations/mcp.py` 请求上游系统,只做字段归一化。
 2. **模型缺失直接报错,禁止加"本地兜底/降级"**。`config.validate()` 在启动时拦截;
-   Jev/Qwen 调用失败要显式抛错(`DecisionError`/`GenerationError`),由 server 转为
+   Jev/chat 调用失败要显式抛错(`DecisionError`/`GenerationError`),由 server 转为
    `ErrorEvent` 让用户可见。不要为了"能跑"而加规则引擎兜底。
-3. **Jev 与 Qwen 的配置永远分离**。新增模型槽位时沿用 `models.<slot>` 结构,
-   各自独立的 base_url/api_key。
+3. **Jev 与 chat 的配置永远分离**。新增模型槽位时沿用 `models.<slot>` 结构,
+   各自独立的 base_url/api_key;chat 槽位不绑厂商(变量名是 CHAT_* 不是 QWEN_*)。
 4. **新工具必须走 `ToolRegistry`**:pydantic 入参 + 明确输出契约
    (`{"result": str, "data": dict, "state_changed": bool}`),并在 business.yaml 的
    `tools` + `mcp.tool_mapping` 两处登记。
@@ -109,6 +108,10 @@ backend/app/
    StartScreenPrompt 等的 icon 只能用集合内的值(package/truck/close 等不存在),
    且类型必须用 `StartScreenPrompt` 而非放宽的 `{icon: string}`,否则构建不报错、
    iframe 运行时白屏。
+10. **mock 数据只允许出现在单元测试里**(项目约定)。单元测试可以用内联假数据
+    (配置字典、FAQ 语料、解析样例);除此之外——联调、集成验证、端到端行为——
+    一律打真实服务(真实 Jev/chat 端点、真实上游 MCP)。不要造 mock LLM、
+    mock 上游 MCP 之类的测试替身,也不要在 `app/` 业务代码里留任何演示数据。
 
 ## 常见任务指南
 
@@ -117,7 +120,7 @@ backend/app/
 1. `backend/app/tools/invoice.py`:pydantic 入参 + handler(经 `ctx.mcp` 调用上游);
 2. `backend/app/tools/__init__.py::build_default_registry` 注册;
 3. `business.yaml` 的 `tools` 列表 + `mcp.tool_mapping` 加映射;
-4. 测试:`tests/test_pipeline.py` 加一条(可直接打参考 MCP,无需 mock)。
+4. 测试:`tests/test_units.py` 加纯单元覆盖;真实链路用真实上游验证(约定 #10)。
 
 ### 加一个新意图
 
@@ -142,13 +145,13 @@ backend/app/
 
 ## 测试基建
 
-- `tests/mock_llm.py`:OpenAI 兼容 mock(按关键词确定性返回 Jev 决策/Qwen 流式/标题),
-  测试与本地联调都用它,不依赖真实模型。
-- `tests/conftest.py`:生成测试配置(LLM 指向 mock,MCP 走 stdio 参考服务)。
-- `tests/test_pipeline.py`:端到端(respond 全链路、确认流程、情绪路由、身份请求头绑定、fail-fast)。
-- `tests/test_units.py`:Jev 解析、向量检索、Widget 模板、Policy、MCP 配置校验。
+- `tests/test_units.py`:唯一的测试文件,纯离线单元测试(约 1 秒):
+  Jev 输出解析与配置校验、向量检索、Widget 模板、Policy、MCP 客户端配置。
+- 按约定 #10,**不使用 mock 服务/ mock 数据做联调**;验证真实链路直接打
+  真实 Jev/chat 端点 + 真实上游 MCP(配好 `.env` 三个 key 后 `npm run dev`,
+  用 `/support/health`、`/support/tools` 自检)。
 
-**新增功能必须带测试**;改路由策略必须覆盖对应置信度分档/情绪分支。
+**新增功能必须带单元测试**;改路由策略必须覆盖对应置信度分档/情绪分支。
 
 ## 已知边界(改动前确认)
 

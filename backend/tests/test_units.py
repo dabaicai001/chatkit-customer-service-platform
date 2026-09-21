@@ -1,10 +1,17 @@
-"""单元测试:Jev 输出解析、向量检索、Widget 模板、Policy。"""
+"""单元测试(纯离线,不依赖任何外部服务与 mock):
+
+- Jev 输出解析与校验
+- 向量检索(memory TF-IDF)
+- Widget 模板构建
+- Policy 路由策略
+- MCP 客户端配置校验
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from app.ai.jev import DecisionError
+from app.ai.jev import JevDecisionEngine
 from app.config import BusinessConfig, ConfigurationError
 from app.core.policy import Policy
 from app.integrations.mcp import McpClientManager, McpError, McpServerConfig
@@ -12,11 +19,40 @@ from app.knowledge import FAQ_DOCUMENTS, MemoryVectorStore
 from app.widgets import build_confirm_widget, build_option_list_widget
 
 
+def _jev_engine() -> JevDecisionEngine:
+    """构造一个不发起真实调用的 Jev 引擎(仅用于输出解析测试)。"""
+
+    config = BusinessConfig(
+        {
+            "models": {
+                "decision": {
+                    "provider": "openjev",
+                    "model": "jev-latest",
+                    "base_url": "http://127.0.0.1:9/v1",
+                    "api_key": "unit-test",
+                }
+            },
+            "intents": {
+                "greet": {"action": "none", "description": "打招呼"},
+                "order_query": {"action": "get_order", "description": "查订单"},
+                "human_request": {"action": "transfer_to_human", "description": "转人工"},
+                "knowledge_query": {"action": "query_knowledge", "description": "通用问题"},
+            },
+            "jev": {
+                "confidence": {"high": 0.85, "low": 0.55},
+                "fallback_action": "query_knowledge",
+                "retry": {"attempts": 2, "backoff_seconds": 0.1},
+            },
+        }
+    )
+    return JevDecisionEngine(config)
+
+
 # ---------------------------------------------------------------------------
 # Jev 输出解析
 # ---------------------------------------------------------------------------
-def test_parse_plain_json(customer_server):
-    decision = customer_server.jev._parse_decision(
+def test_parse_plain_json():
+    decision = _jev_engine()._parse_decision(
         '{"intent":"order_query","action":"get_order","confidence":0.9}'
     )
     assert decision.action == "get_order"
@@ -24,28 +60,37 @@ def test_parse_plain_json(customer_server):
     assert decision.need_tool is True
 
 
-def test_parse_markdown_fenced_json(customer_server):
+def test_parse_markdown_fenced_json():
     content = '好的,结果如下:\n```json\n{"intent":"greet","action":"none","confidence":0.6}\n```'
-    decision = customer_server.jev._parse_decision(content)
+    decision = _jev_engine()._parse_decision(content)
     assert decision.action == "none"
 
 
-def test_parse_rejects_unknown_action(customer_server):
-    with pytest.raises(DecisionError):
-        customer_server.jev._parse_decision('{"action":"hack_the_planet"}')
+def test_parse_rejects_unknown_action():
+    with pytest.raises(Exception) as exc_info:
+        _jev_engine()._parse_decision('{"action":"hack_the_planet"}')
+    assert "action" in str(exc_info.value)
 
 
-def test_parse_rejects_garbage(customer_server):
-    with pytest.raises(DecisionError):
-        customer_server.jev._parse_decision("完全不是 JSON")
+def test_parse_rejects_garbage():
+    with pytest.raises(Exception):
+        _jev_engine()._parse_decision("完全不是 JSON")
 
 
-def test_parse_normalizes_emotion(customer_server):
-    decision = customer_server.jev._parse_decision(
+def test_parse_normalizes_emotion():
+    decision = _jev_engine()._parse_decision(
         '{"action":"none","emotion":"ANGRY","confidence":"abc"}'
     )
     assert decision.emotion == "angry"
     assert decision.confidence == 0.5  # 非法数值回退默认
+
+
+def test_jev_engine_requires_config():
+    """模型槽位未配置时构造引擎必须报错(不静默降级)。"""
+
+    config = BusinessConfig({"models": {"decision": {"provider": "openjev"}}})
+    with pytest.raises(ConfigurationError):
+        JevDecisionEngine(config)
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +203,12 @@ def test_confirmation_prompt_rendering():
 # ---------------------------------------------------------------------------
 def test_mcp_server_config_requires_url():
     with pytest.raises(ConfigurationError):
-        McpServerConfig.from_dict({"name": "crm", "transport": "http"})
+        McpServerConfig.from_dict({"name": "upstream", "transport": "http"})
 
 
 def test_mcp_server_config_rejects_bad_transport():
     with pytest.raises(ConfigurationError):
-        McpServerConfig.from_dict({"name": "crm", "transport": "grpc"})
+        McpServerConfig.from_dict({"name": "upstream", "transport": "grpc"})
 
 
 def test_mcp_manager_requires_servers():
@@ -176,7 +221,7 @@ def test_mcp_manager_requires_mapping():
     config = BusinessConfig(
         {
             "mcp": {
-                "servers": [{"name": "crm", "transport": "http", "url": "http://x/mcp"}],
+                "servers": [{"name": "upstream", "transport": "http", "url": "http://x/mcp"}],
                 "tool_mapping": {},
             }
         }

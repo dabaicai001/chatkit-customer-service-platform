@@ -45,6 +45,19 @@ class Ticket:
 
 
 @dataclass(slots=True)
+class Product:
+    """一个商品/产品(电商/SaaS 套餐通用)。"""
+
+    id: str
+    name: str
+    mer_id: str = ""
+    sale_state: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class CustomerProfile:
     """统一客户画像(由 MCP 上游数据归一化而来)。"""
 
@@ -125,15 +138,16 @@ def _first_list(raw: Mapping[str, Any], *keys: str) -> List[str]:
 def normalize_customer(raw: Mapping[str, Any]) -> CustomerProfile:
     if not isinstance(raw, Mapping):
         raise McpError(f"上游返回的客户数据格式错误:{type(raw).__name__}")
-    customer_id = _first_str(raw, "customer_id", "id", "userId", "user_id")
+    # 字段名容忍上游差异:snake_case 与 camelCase 都认
+    customer_id = _first_str(raw, "customer_id", "customerId", "id", "userId", "user_id")
     if not customer_id:
-        raise McpError("上游客户数据缺少 customer_id/id 字段。")
+        raise McpError("上游客户数据缺少 customer_id/customerId/id 字段。")
     return CustomerProfile(
         customer_id=customer_id,
-        name=_first_str(raw, "name", "nickname", "customer_name", default="未知客户"),
+        name=_first_str(raw, "name", "nickname", "customer_name", "realName", default="未知客户"),
         level=_first_str(raw, "level", "tier", "member_level", "grade", default="普通会员"),
         email=_first_str(raw, "email", "mail"),
-        phone=_first_str(raw, "phone", "mobile", "telephone"),
+        phone=_first_str(raw, "phone", "mobile", "telephone", "teleNo"),
         tags=_first_list(raw, "tags", "labels"),
         summary=_first_str(raw, "summary", "profile", "description"),
         orders=[],
@@ -144,7 +158,7 @@ def normalize_customer(raw: Mapping[str, Any]) -> CustomerProfile:
 
 def normalize_order(raw: Mapping[str, Any]) -> Order:
     return Order(
-        id=_first_str(raw, "id", "order_id", "order_no", "orderNo"),
+        id=_first_str(raw, "id", "order_id", "orderId", "order_no", "orderNo"),
         title=_first_str(raw, "title", "name", "product_name", "subject"),
         status=_first_str(raw, "status", "order_status", "state", default="未知"),
         amount=_first_float(raw, "amount", "total", "total_amount", "price", "pay_amount"),
@@ -155,11 +169,20 @@ def normalize_order(raw: Mapping[str, Any]) -> Order:
 
 def normalize_ticket(raw: Mapping[str, Any]) -> Ticket:
     return Ticket(
-        id=_first_str(raw, "id", "ticket_id", "ticket_no"),
+        id=_first_str(raw, "id", "ticket_id", "ticketId", "ticket_no"),
         subject=_first_str(raw, "subject", "title", "content", "description"),
         status=_first_str(raw, "status", "ticket_status", "state", default="未知"),
         priority=_first_str(raw, "priority", "level", default="中"),
         created_at=_first_str(raw, "created_at", "create_time", "createdAt"),
+    )
+
+
+def normalize_product(raw: Mapping[str, Any]) -> Product:
+    return Product(
+        id=_first_str(raw, "product_id", "productId", "goods_id", "goodsId", "id"),
+        name=_first_str(raw, "name", "goods_name", "goodsName", "title"),
+        mer_id=_first_str(raw, "mer_id", "merId", "merchant_id"),
+        sale_state=_first_str(raw, "sale_state", "saleState", "status"),
     )
 
 
@@ -234,7 +257,7 @@ class CustomerGateway:
         return normalize_customer(records[0])
 
     async def load_profile(self, customer_id: str, *, refresh: bool = False) -> CustomerProfile:
-        """加载完整画像:客户基本信息 + 订单 + 工单(三次 MCP 调用)。"""
+        """加载完整画像:客户基本信息 + 订单(必选)+ 工单(可选,未配置映射则跳过)。"""
 
         if not customer_id:
             raise McpError("load_profile 需要 customer_id。")
@@ -255,9 +278,15 @@ class CustomerGateway:
         orders_payload = await self._mcp.call_tool(orders_mapping, {"customer_id": customer_id})
         profile.orders = [normalize_order(r) for r in _as_records(orders_payload, "orders", "list", "items")]
 
-        tickets_mapping = self._mcp.require_mapping("list_tickets")
-        tickets_payload = await self._mcp.call_tool(tickets_mapping, {"customer_id": customer_id})
-        profile.tickets = [normalize_ticket(r) for r in _as_records(tickets_payload, "tickets", "list", "items")]
+        # 工单为可选数据源:上游未暴露 list_tickets 时明确跳过(记录一次日志)
+        tickets_mapping = self._mcp.mapping_for("list_tickets")
+        if tickets_mapping:
+            tickets_payload = await self._mcp.call_tool(tickets_mapping, {"customer_id": customer_id})
+            profile.tickets = [
+                normalize_ticket(r) for r in _as_records(tickets_payload, "tickets", "list", "items")
+            ]
+        else:
+            logger.info("未配置 list_tickets 映射,工单面板数据跳过。")
 
         self._cache[customer_id] = (self._now(), profile)
         return profile

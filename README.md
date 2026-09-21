@@ -11,8 +11,9 @@
                     │      ChatKit UI     │
                     │   通用客服聊天页面    │
                     └──────────┬──────────┘
-                               │
-                    ┌──────────▼──────────┐
+                               ▲
+                               │ 流式文本 / Widget / 画像副作用
+                    ┌──────────┴──────────┐
                     │  Customer Gateway   │  ← server.py(编排,不含业务规则)
                     └──────────┬──────────┘
                                │
@@ -20,27 +21,46 @@
                     │        Jev          │  ← ai/jev.py(大脑:意图/情绪/置信度)
                     │      Decision       │
                     └──────────┬──────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              ▼                ▼                ▼
-        ┌──────────┐     ┌──────────┐     ┌──────────┐
-        │   MCP    │     │   RAG    │     │  Human   │
-        │ 上游系统  │     │ 公司知识库│     │ 人工客服  │
-        └────┬─────┘     └──────────┘     └──────────┘
-             │
-    ┌────────┼────────┐
-    ▼        ▼        ▼
-  CRM/OMS  商品中心  工单系统
-             │
-             ▼
-        ┌──────────┐
-        │  Qwen    │  ← ai/qwen.py(把话说好:流式生成客服话术)
-        └──────────┘
+                               │ 出口判定(意图/情绪/置信度/规则)
+              ┌────────────────┴────────────────┐
+              ▼                                 ▼
+        ┌──────────────┐                  ┌──────────────┐
+        │  ① AI CHAT   │                  │ ② 人工客服   │
+        │  AI 自己办成  │                  │ 转接排队接管  │
+        └──────┬───────┘                  └──────────────┘
+               │ 内部三种办案手段
+    ┌──────────┼──────────┐
+    ▼          ▼          ▼
+┌────────┐ ┌────────┐ ┌──────────┐
+│  MCP   │ │  RAG   │ │ 直接回答  │
+│ 上游数据│ │公司知识库│ │(无需查证)│
+└───┬────┘ └───┬────┘ └──────────┘
+    │          │
+    └────┬─────┘
+         ▼
+┌─────────────────────────┐
+│  已查证信息(统一上下文)  │
+│  工具结果 + 知识库段落    │  ← ComposeContext(ai/qwen.py)
+└──────────┬──────────────┘
+           ▼
+    ┌──────────┐
+    │ 生成模型 │  ← ai/qwen.py(把话说好:流式生成客服话术)
+    └──────────┘
 ```
+
+**最终出口只有两个**:
+
+1. **AI CHAT** — AI 把事办成:内部按需走 MCP 取数 / RAG 查知识 / 直接回答,
+   结果统一汇成「已查证信息」交给生成模型产出话术;
+2. **人工客服** — 转接:用户明确要求、情绪愤怒、低置信度、或上游未暴露的
+   变更类操作(退款/取消/建工单)时,由人工接管(转接提示语也由 AI 生成)。
+
+生成模型是 AI 出口内部各手段的汇合点——它不自己调 MCP/RAG,只负责
+“把已查证的事说好”。
 
 - **ChatKit = UI**:官方 SDK 串起聊天、流式、Widget、附件、听写,不重造轮子。
 - **Jev = 判断器**:小模型只输出结构化决策(意图/情绪/置信度/路由),不生成回答。
-- **Qwen = 说话的人**:大模型基于已查证结果生成自然语言话术,流式返回。
+- **生成模型 = 说话的人**:chat 槽位大模型基于已查证结果生成自然语言话术,流式返回。
 - **MCP = 数据面**:客户/订单/商品/工单全部经内嵌 MCP Client 请求上游系统,平台不直连业务库。
 - **RAG = 公司知识库**:内置纯 Python 向量检索(可切换 chroma)。
 
@@ -61,7 +81,7 @@ customer-service/
 └── backend/
     ├── pyproject.toml
     ├── scripts/run-backend.sh
-    ├── tests/                             # 36 个测试:单元 + 端到端(mock LLM + 参考 MCP)
+    ├── tests/                             # 19 个纯离线单元测试(无 mock 服务)
     └── app/
         ├── main.py                        # FastAPI 入口
         ├── server.py                      # Customer Gateway(编排层)
@@ -75,7 +95,7 @@ customer-service/
         │   └── session.py                 # 会话状态(身份绑定/流水/待确认)
         ├── ai/
         │   ├── jev.py                     # Jev 决策引擎
-        │   ├── qwen.py                    # Qwen 流式生成
+        │   ├── qwen.py                    # chat 槽位流式生成
         │   └── rag.py                     # RAG 编排
         ├── tools/                         # 插件式工具(强校验 + 统一契约)
         │   ├── customer.py  order.py  product.py  ticket.py
@@ -85,8 +105,7 @@ customer-service/
         │   ├── faq.py                     # FAQ 语料
         │   └── vector_store.py            # memory(TF-IDF)/ chroma
         ├── integrations/
-        │   ├── mcp.py                     # 内嵌 MCP Client
-        │   └── reference/crm_mcp_server.py# 参考上游实现(契约 + 测试替身)
+        │   └── mcp.py                     # 内嵌 MCP Client
         ├── widgets/                       # 通用 Widget(选择列表/确认卡片)
         ├── memory_store.py                # ChatKit Store(官方示例复用)
         ├── attachment_store.py            # 附件存储(官方示例复用)
@@ -95,10 +114,22 @@ customer-service/
 
 ## 快速开始
 
-### 1. 配置(必配,缺失则服务拒绝启动)
+### 1. 配置(只差 3 个 key)
 
-模型层为三个独立槽位,**Jev 与 Qwen 的 key 完全分开配置**。
-密钥**不进仓库**:`business.yaml` 里只有 `${JEV_API_KEY:-}` 占位,真实值走环境变量。
+`business.yaml` 已内置全部默认值(Jev 指向 typesafe 网关、chat 指向 MiniMax 的
+OpenAI 兼容端点),**真正要填的只有 3 个密钥**:
+
+```bash
+cp backend/.env.example backend/.env
+# 编辑 backend/.env,填这三个值:
+#   JEV_API_KEY=...        # Jev 决策模型(business.yaml 默认 https://api.typesafe.ai/v1/systemone)
+#   CHAT_API_KEY=...       # 话术生成模型(默认 MiniMax: https://api.minimax.cn/v1,模型 MiniMax-M3)
+#   UPSTREAM_MCP_TOKEN=... # 上游业务系统 MCP 的 auth token(URL 按实际改)
+cp frontend/.env.example frontend/.env   # 填真实 ChatKit 域名密钥(见下方注意项)
+```
+
+chat 槽位不绑死厂商(Qwen/GPT/DeepSeek/MiniMax 均可,只要是 OpenAI 兼容端点),
+换厂商只改 `CHAT_BASE_URL` + `CHAT_MODEL` 两个值。
 
 ### 2. 启动
 
@@ -123,10 +154,12 @@ cd frontend && npm install && npm run dev
 ### 3. 跑测试
 
 ```bash
-cd backend && uv run pytest tests/ -q     # 39 passed
+cd backend && uv sync --extra dev && uv run pytest tests/ -q     # 19 passed
 ```
 
-测试不依赖任何外部服务:mock LLM(OpenAI 兼容)+ 参考 MCP Server(stdio)。
+测试为**纯离线单元测试**(约 1 秒):不依赖任何外部服务,也不需要 mock 服务。
+按项目约定,mock 数据只允许出现在单元测试里;集成/端到端行为请直接打真实服务
+(真实 Jev/chat 端点 + 真实上游 MCP)验证。
 
 ## 准生产/生产接入:模型 key 在哪里输入
 
@@ -135,9 +168,9 @@ cd backend && uv run pytest tests/ -q     # 39 passed
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `JEV_PROVIDER` / `JEV_BASE_URL` / `JEV_API_KEY` / `JEV_MODEL` | ✅ | Jev 决策模型(OpenAI 兼容端点) |
-| `QWEN_PROVIDER` / `QWEN_BASE_URL` / `QWEN_API_KEY` / `QWEN_MODEL` | ✅ | Qwen 生成模型 |
-| `CRM_MCP_URL` / `CRM_MCP_TOKEN` | ✅ | MCP 数据面(上游系统) |
+| `JEV_PROVIDER` / `JEV_BASE_URL` / `JEV_API_KEY` / `JEV_MODEL` | ✅ key | Jev 决策模型;默认 `https://api.typesafe.ai/v1/systemone` |
+| `CHAT_PROVIDER` / `CHAT_BASE_URL` / `CHAT_API_KEY` / `CHAT_MODEL` | ✅ key | 话术生成模型(不限厂商);默认 MiniMax `https://api.minimax.cn/v1` / `MiniMax-M3` |
+| `UPSTREAM_MCP_URL` / `UPSTREAM_MCP_TOKEN` | ✅ token | MCP 数据面(上游业务系统);默认 `http://127.0.0.1:9003/mcp` |
 | `OPENAI_API_KEY` | ⬜ | 语音听写(不配则听写不可用,文字对话不受影响) |
 | `VITE_CHATKIT_API_DOMAIN_KEY`(前端) | ✅ | ChatKit 域名密钥,见下方“域名 allowlist” |
 
@@ -152,7 +185,7 @@ npm run dev:win                           # Windows;Linux/macOS 用 npm run dev
 
 # ② 平台注入环境变量(Docker -e / K8s Secret / systemd EnvironmentFile)
 #    优先级高于 .env,与之混用不会冲突
-JEV_API_KEY=sk-xxx QWEN_API_KEY=sk-yyy \
+JEV_API_KEY=sk-xxx CHAT_API_KEY=sk-yyy \
   uv run uvicorn app.main:app --port 8001
 
 # ③ uv 原生 env-file(不改代码)
@@ -165,8 +198,8 @@ docker run --env-file backend/.env -p 8001:8001 your-image
 **接入后自检(30 秒)**:
 
 ```bash
-curl http://<host>:8001/support/health    # {"status":"healthy","mcp":{"crm":{"connected":true,...}}}
-curl http://<host>:8001/support/tools     # 确认 jev.models 显示真实 provider/model、mcp 映射齐全
+curl http://<host>:8001/support/health    # {"status":"healthy","mcp":{"upstream":{"connected":true,...}}}
+curl http://<host>:8001/support/tools     # 确认 jev/chat 槽位显示真实 provider/model、mcp 映射齐全
 ```
 
 若 key 缺失,服务**拒绝启动**并列出缺少的变量(不静默降级);若端点不通,
@@ -213,7 +246,7 @@ jev:
   fallback_action: query_knowledge
   emotion_routing:  # 情绪 → 路由覆盖(优先于业务动作)
     angry: transfer_to_human
-    anxious: none   # none = 不改道,由 Qwen 话术安抚
+    anxious: none   # none = 不改道,由生成模型话术安抚
   retry:
     attempts: 2
     backoff_seconds: 0.5
@@ -239,12 +272,11 @@ decision.action
 ```yaml
 mcp:
   tool_mapping:
-    search_customer: crm.search_customer
-    get_order: crm.get_order
-    refund_order: crm.refund_order
-    get_customer: crm.get_customer        # 侧栏画像聚合
-    list_orders: crm.list_orders
-    list_tickets: crm.list_tickets
+    search_customer: upstream.search_customer
+    get_order: upstream.get_order
+    get_customer: upstream.get_customer        # 侧栏画像聚合
+    list_orders: upstream.list_orders
+    get_product: upstream.get_product
 ```
 
 ### MCP 数据面(integrations/mcp.py)
@@ -253,12 +285,32 @@ mcp:
 - 懒连接、断线重连重试一次、调用超时、结构化结果归一化(自动解包 FastMCP 的
   `{"result": ...}` 约定);
 - 启动时连接全部 Server,失败即退出(fail-fast);
-- `app/integrations/reference/crm_mcp_server.py` 是参考实现:既是给上游团队的
-  契约示例,也是测试替身。启动参考服务:
+- 兼容 stateful MCP Server(自动 initialize + 会话 ID 管理);
+- 上游字段命名容忍差异(snake_case / camelCase 都认,归一化在 `core/customer.py`);
+- 工单为可选数据源:上游未配置 `list_tickets` 映射时明确跳过(记录日志),不报错。
 
-  ```bash
-  python backend/app/integrations/reference/crm_mcp_server.py --http --port 9001
-  ```
+### 接入上游业务系统
+
+平台经 MCP 从上游取数,上游需要按约定暴露以下工具(工具名可在
+`mcp.tool_mapping` 中自行映射):
+
+| 平台工具 | 用途 | 上游入参约定 |
+|---|---|---|
+| `search_customer` | 客户检索(识别身份) | `phone` / `customer_id` / `keyword` 至少一个 |
+| `get_customer` | 客户资料(画像聚合) | `customer_id` |
+| `get_order` | 订单查询 | `order_id` 或 `customer_id`(可选 `limit`) |
+| `list_orders` | 客户订单列表(侧栏) | `customer_id`(可选 `limit`) |
+| `get_product` | 商品查询 | `product_id` 或 `keyword`(可选 `limit`) |
+
+返回结构约定:`search_customer → {"customers": [...]}`、
+`get_customer → {"customer": {...}}`、`get_order → {"orders": [...]}`、
+`list_orders → {"customer_id": ..., "total": n, "orders": [...]}`、
+`get_product → {"products": [...]}`;字段名 snake_case / camelCase 均可。
+
+- **v1 为查询能力**:退款/取消/建工单上游尚未暴露 MCP 工具,相应意图按配置
+  路由到转人工(见 business.yaml intents 注释);上游后续暴露后,取消注释即可恢复。
+- **联调方式**:直接打真实上游(配置 `UPSTREAM_MCP_URL` / `UPSTREAM_MCP_TOKEN`),
+  按项目约定不使用 mock 数据;`/support/tools` 端点可查看当前工具与映射。
 
 ### 换一家公司的客服 = 改 YAML
 
@@ -283,7 +335,7 @@ mcp:
    - `X-Customer-Id` — 直接传客户 ID(**生产推荐由网关注入**,客户端直传可伪造);
    - `X-Customer-Phone` — 传手机号,平台经 MCP `search_customer` 解析;
    - `X-Customer-Token` — 传令牌,平台经 MCP `resolve_token` 换客户 ID
-     (需在 `mcp.tool_mapping` 中配置 `resolve_token: crm.resolve_token` 才启用)。
+     (需在 `mcp.tool_mapping` 中配置 `resolve_token: upstream.resolve_token` 才启用)。
 2. **第三方渠道(微信/WhatsApp/飞书)**:渠道回调带 openid/unionid,由渠道适配层
    映射成 customer_id 后以同样方式传入。
 3. **匿名访客**:对话内自述(手机号/订单号),走 `search_customer` 路径——
@@ -299,7 +351,7 @@ mcp:
 | 业务 | 航空(航班/座位/行李/餐食写死) | 通用(客户/订单/商品/工单) |
 | 状态 | AirlineStateManager(进程内种子数据) | MCP 实时请求上游 + 会话状态分离 |
 | 决策 | gpt-4.1-mini Agent 自带工具调用 | Jev 结构化决策 + 代码路由(可控/可观测) |
-| 生成 | 与决策同一个 Agent | 独立 Qwen 生成层,基于已查证结果 |
+| 生成 | 与决策同一个 Agent | 独立生成层(chat 槽位),基于已查证结果 |
 | 工具 | 6 个航空工具写死在 Agent | 插件式 ToolRegistry,pydantic 校验,MCP 映射 |
 | 组件 | 航班选择/餐食选择 | 通用选择列表/确认卡片(.widget 模板) |
 | 侧栏 | 航班/行程/会员 | 客户档案/订单/工单(面板按配置渲染) |

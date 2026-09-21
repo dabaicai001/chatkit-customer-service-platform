@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, model_validator
 
-from ..core.customer import _as_records
+from ..core.customer import _as_records, normalize_product
 from . import Tool, ToolContext
 
 
@@ -28,23 +28,20 @@ async def _get_product(ctx: ToolContext) -> Dict[str, Any]:
 
     records = _as_records(payload, "products", "product", "results", "items")
     if not records:
-        return {"result": "未找到相关商品信息。", "data": {"products": []}}
+        return {"result": "未找到相关商品信息。", "data": {"products": []}, "found": False}
 
+    products = [normalize_product(record) for record in records[:5]]
     lines = []
-    for record in records[:5]:
-        name = record.get("name") or record.get("title") or record.get("product_id", "")
-        price = record.get("price") or record.get("amount")
-        stock = record.get("stock") or record.get("inventory")
-        parts = [str(name)]
-        if price not in (None, ""):
-            parts.append(f"价格 ¥{price}")
-        if stock not in (None, ""):
-            parts.append(f"库存 {stock}")
+    for product in products:
+        parts = [product.name]
+        if product.sale_state:
+            parts.append(product.sale_state)
         lines.append(":".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0])
 
     return {
         "result": "；".join(lines),
-        "data": {"products": [dict(r) for r in records[:5]]},
+        "data": {"products": [product.to_dict() for product in products]},
+        "found": True,
     }
 
 
