@@ -1,3 +1,5 @@
+import type { StartScreenPrompt } from "@openai/chatkit";
+
 import type { BootstrapConfig, SupportView } from "../types/support";
 import { DEFAULT_BOOTSTRAP } from "../types/support";
 
@@ -46,30 +48,21 @@ export async function fetchBootstrapConfig(): Promise<BootstrapConfig> {
   }
 }
 
-/** 各面板的欢迎语与推荐提问(可按覆盖配置继续扩展) */
-export const SUPPORT_GREETINGS: Record<SupportView, string> = {
-  overview: "您好,我是您的专属客服,请问有什么可以帮您?",
-  orders: "需要查询订单、物流或售后进度吗?",
-  tickets: "需要查看工单或创建新的服务记录吗?",
-};
-
-export const SUPPORT_STARTER_PROMPTS: Record<
-  SupportView,
-  { label: string; prompt: string; icon: string }[]
-> = {
+/** 各面板的推荐提问(icon 必须是 ChatKit 合法图标名,由 StartScreenPrompt 类型约束) */
+export const SUPPORT_STARTER_PROMPTS: Record<SupportView, StartScreenPrompt[]> = {
   overview: [
-    { label: "查订单", prompt: "帮我查一下最新的订单到哪了。", icon: "package" },
-    { label: "退款政策", prompt: "你们的退款政策是怎样的?", icon: "notebook" },
+    { label: "查订单", prompt: "帮我查一下最新的订单到哪了。", icon: "cube" },
+    { label: "退款政策", prompt: "你们的退款政策是怎样的?", icon: "book-open" },
     { label: "转人工", prompt: "我要转人工客服。", icon: "profile" },
   ],
   orders: [
-    { label: "物流进度", prompt: "我的订单发货了吗?快递到哪了?", icon: "truck" },
-    { label: "申请退款", prompt: "我要申请退款。", icon: "refresh" },
-    { label: "取消订单", prompt: "帮我取消这个订单。", icon: "close" },
+    { label: "物流进度", prompt: "我的订单发货了吗?快递到哪了?", icon: "maps" },
+    { label: "申请退款", prompt: "我要申请退款。", icon: "reload" },
+    { label: "取消订单", prompt: "帮我取消这个订单。", icon: "chevron-left" },
   ],
   tickets: [
-    { label: "商品问题", prompt: "收到的商品有质量问题,我要投诉。", icon: "alert" },
+    { label: "商品问题", prompt: "收到的商品有质量问题,我要投诉。", icon: "info" },
     { label: "工单进度", prompt: "我的工单处理得怎么样了?", icon: "notebook-pencil" },
-    { label: "保修咨询", prompt: "这个产品保修多久?怎么保修?", icon: "shield" },
+    { label: "保修咨询", prompt: "这个产品保修多久?怎么保修?", icon: "lifesaver" },
   ],
 };

@@ -166,10 +166,12 @@ def normalize_ticket(raw: Mapping[str, Any]) -> Ticket:
 def _as_records(payload: Any, *collection_keys: str) -> List[Mapping[str, Any]]:
     """把上游返回统一解析为记录列表。
 
-    兼容三种常见形态::
-        {"orders": [...]}
-        {"data": {"orders": [...]}}
-        [{...}, {...}]
+    兼容常见形态::
+
+        {"orders": [...]}                  # 集合
+        {"customer": {...}}                # 单对象
+        {"data": {"orders": [...]}}        # 嵌套
+        [{...}, {...}]                     # 裸列表
     """
 
     if isinstance(payload, list):
@@ -179,11 +181,11 @@ def _as_records(payload: Any, *collection_keys: str) -> List[Mapping[str, Any]]:
             value = payload.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, Mapping)]
+            if isinstance(value, Mapping):
+                return [value]
         data = payload.get("data")
-        if isinstance(data, Mapping):
+        if isinstance(data, (Mapping, list)):
             return _as_records(data, *collection_keys)
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, Mapping)]
     return []
 
 
