@@ -28,6 +28,11 @@
 
 Jev 与 Qwen 是两个独立槽位,key 分开配置、互不影响(见 `backend/app/config/business.yaml` 的 `models` 段)。
 
+**密钥输入位置:只有环境变量**(模板见 `backend/.env.example` / `frontend/.env.example`,
+真实 `.env` 已被 git 忽略)。启动脚本 `backend/scripts/run-backend.sh`(bash)或
+`run-backend.ps1`(Windows)会自动加载 `backend/.env`;也可用 `uv run --env-file`、
+Docker `--env-file`、K8s Secret 等平台注入方式,优先级高于 .env。缺失即拒绝启动。
+
 ## 常用命令
 
 ```bash

@@ -6,7 +6,9 @@
   "scripts": {
     "install:all": "npm --prefix frontend install",
     "dev": "concurrently --kill-others-on-fail --names backend,frontend \"npm run backend\" \"npm run frontend\"",
+    "dev:win": "concurrently --kill-others-on-fail --names backend,frontend \"npm run backend:ps1\" \"npm run frontend\"",
     "backend": "./backend/scripts/run-backend.sh",
+    "backend:ps1": "pwsh -NoProfile -File ./backend/scripts/run-backend.ps1",
     "frontend": "npm --prefix frontend run dev",
     "test": "cd backend && uv run pytest tests/ -q"
   },

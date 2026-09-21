@@ -97,34 +97,15 @@ customer-service/
 
 ### 1. 配置(必配,缺失则服务拒绝启动)
 
-模型层为三个独立槽位,**Jev 与 Qwen 的 key 完全分开配置**:
-
-```bash
-# Jev(决策模型,小模型即可)
-export JEV_PROVIDER=openjev
-export JEV_BASE_URL=https://your-jev-gateway/v1     # OpenAI 兼容端点
-export JEV_API_KEY=sk-xxx
-export JEV_MODEL=openjev-qwen4b
-
-# Qwen(生成模型,大模型)
-export QWEN_PROVIDER=qwen
-export QWEN_BASE_URL=https://your-qwen-endpoint/v1  # 如 DashScope 兼容模式
-export QWEN_API_KEY=sk-xxx
-export QWEN_MODEL=qwen3.8-14b
-
-# MCP 数据面(上游系统以 MCP 协议暴露数据)
-export CRM_MCP_URL=http://127.0.0.1:9001/mcp
-export CRM_MCP_TOKEN=xxx
-```
-
-也可直接在 `backend/app/config/business.yaml` 中修改 `models` / `mcp` 段。
+模型层为三个独立槽位,**Jev 与 Qwen 的 key 完全分开配置**。
+密钥**不进仓库**:`business.yaml` 里只有 `${JEV_API_KEY:-}` 占位,真实值走环境变量。
 
 ### 2. 启动
 
 ```bash
 # 仓库根目录
 npm run install:all
-npm run dev          # backend :8001 + frontend :5171
+npm run dev          # backend :8001 + frontend :5171(Windows 用 npm run dev:win)
 ```
 
 或分步:
@@ -142,10 +123,64 @@ cd frontend && npm install && npm run dev
 ### 3. 跑测试
 
 ```bash
-cd backend && uv run pytest tests/ -q     # 36 passed
+cd backend && uv run pytest tests/ -q     # 39 passed
 ```
 
 测试不依赖任何外部服务:mock LLM(OpenAI 兼容)+ 参考 MCP Server(stdio)。
+
+## 准生产/生产接入:模型 key 在哪里输入
+
+**唯一入口:环境变量**(代码与 `business.yaml` 里不含任何密钥)。
+完整清单见 `backend/.env.example` 与 `frontend/.env.example`,复制后填真实值:
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `JEV_PROVIDER` / `JEV_BASE_URL` / `JEV_API_KEY` / `JEV_MODEL` | ✅ | Jev 决策模型(OpenAI 兼容端点) |
+| `QWEN_PROVIDER` / `QWEN_BASE_URL` / `QWEN_API_KEY` / `QWEN_MODEL` | ✅ | Qwen 生成模型 |
+| `CRM_MCP_URL` / `CRM_MCP_TOKEN` | ✅ | MCP 数据面(上游系统) |
+| `OPENAI_API_KEY` | ⬜ | 语音听写(不配则听写不可用,文字对话不受影响) |
+| `VITE_CHATKIT_API_DOMAIN_KEY`(前端) | ✅ | ChatKit 域名密钥,见下方“域名 allowlist” |
+
+按部署方式四选一:
+
+```bash
+# ① .env 文件(单机/准生产最常用)
+cp backend/.env.example backend/.env      # 填入真实值(.env 已被 .gitignore)
+cp frontend/.env.example frontend/.env    # 填真实 ChatKit 域名密钥
+npm run dev:win                           # Windows;Linux/macOS 用 npm run dev
+# 启动脚本会自动加载 backend/.env;也可指定其他文件:ENV_FILE=/path/to/env
+
+# ② 平台注入环境变量(Docker -e / K8s Secret / systemd EnvironmentFile)
+#    优先级高于 .env,与之混用不会冲突
+JEV_API_KEY=sk-xxx QWEN_API_KEY=sk-yyy \
+  uv run uvicorn app.main:app --port 8001
+
+# ③ uv 原生 env-file(不改代码)
+uv run --env-file backend/.env uvicorn app.main:app --app-dir backend --port 8001
+
+# ④ Docker
+docker run --env-file backend/.env -p 8001:8001 your-image
+```
+
+**接入后自检(30 秒)**:
+
+```bash
+curl http://<host>:8001/support/health    # {"status":"healthy","mcp":{"crm":{"connected":true,...}}}
+curl http://<host>:8001/support/tools     # 确认 jev.models 显示真实 provider/model、mcp 映射齐全
+```
+
+若 key 缺失,服务**拒绝启动**并列出缺少的变量(不静默降级);若端点不通,
+`/support/health` 的 `mcp` 段会显示 `connected: false` 与原因。
+
+**两个准生产注意项**:
+
+1. **ChatKit 域名 allowlist**:前端 `VITE_CHATKIT_API_DOMAIN_KEY` 必须是在
+   [platform.openai.com/settings/organization/security/domain-allowlist](https://platform.openai.com/settings/organization/security/domain-allowlist)
+   注册过准生产域名后生成的 `domain_pk_...` 真实密钥;本地占位符只够开发用。
+   同时在 `frontend/vite.config.ts` 的 `server.allowedHosts` 中加入该域名。
+2. **身份接入**:已登录场景由网关/前端带 `X-Customer-Id`(或 `X-Customer-Phone` /
+   `X-Customer-Token`)请求头,详见下方「身份来源」;客户端直传的 ID 可伪造,
+   生产上应由网关注入或改用 token 换取。
 
 ## 核心机制
 
