@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping
@@ -99,6 +100,8 @@ class McpClientManager:
         self._stacks: Dict[str, AsyncExitStack] = {}
         self._locks: Dict[str, asyncio.Lock] = {name: asyncio.Lock() for name in self._servers}
         self._started = False
+        # 最近一次调用记录(耗时/工具/成败,供侧栏「调用流程与耗时」展示)
+        self.last_call: Dict[str, Any] | None = None
 
     # ------------------------------------------------------------- 配置查询
     @property
@@ -216,16 +219,35 @@ class McpClientManager:
 
         last_error: Exception | None = None
         for attempt in (1, 2):
+            started = time.monotonic()
             try:
                 session = await self._ensure_session(server_name)
                 result = await asyncio.wait_for(
                     session.call_tool(tool_name, arguments or {}),
                     timeout=timeout,
                 )
+                self.last_call = {
+                    "tool": tool_name,
+                    "mapping": mapping,
+                    "ms": round((time.monotonic() - started) * 1000),
+                    "ok": True,
+                }
                 return self._normalize_result(result, mapping)
             except McpError:
+                self.last_call = {
+                    "tool": tool_name,
+                    "mapping": mapping,
+                    "ms": round((time.monotonic() - started) * 1000),
+                    "ok": False,
+                }
                 raise  # 上游工具报错,不重试
             except Exception as exc:
+                self.last_call = {
+                    "tool": tool_name,
+                    "mapping": mapping,
+                    "ms": round((time.monotonic() - started) * 1000),
+                    "ok": False,
+                }
                 last_error = exc
                 logger.warning(
                     "MCP 调用 %s 第 %d 次失败:%s,尝试重连重试。", mapping, attempt, exc

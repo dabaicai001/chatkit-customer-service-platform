@@ -1,246 +1,132 @@
-"""ai/qwen.py:Qwen 生成层——负责"把话说好"的人。
+"""ai/qwen.py:chat 槽位公共能力——思维链过滤与会话标题。
 
-Jev 决策、工具执行、RAG 检索的结果在这里汇聚,由 Qwen 生成最终客服话术,
-以流式(SSE)方式逐段产出。通过 business.yaml 的 ``models.chat`` 槽位接入
-(独立环境变量 QWEN_PROVIDER / QWEN_BASE_URL / QWEN_API_KEY / QWEN_MODEL)。
+话术生成与「模型直连 MCP」的工具调用循环已迁至 ai/mcp_agent.py;
+这里只保留与具体请求无关的公共件:
 
-未配置或调用失败直接抛错,不做模板兜底。
+- ``_ReasoningFilter`` / ``_strip_reasoning``:推理型模型(MiniMax-M3 等)
+  会把思维链混进 content,流式用状态机过滤、非流式用整块剥离;
+- ``generate_title``:会话标题生成(复用 models.title 槽位);
+- ``GenerationError``:生成失败显式抛错(不静默降级)。
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Optional
+import re
+from typing import List
 
 import httpx
 
 from ..config import BusinessConfig
-from ..core.customer import CustomerProfile
 
 logger = logging.getLogger(__name__)
 
+# 推理型模型(MiniMax-M3 等)可能把思维链直接混在 content 里流出来。
+# reasoning_content 独立字段的模型天然安全(本层只读 content);这里兜底
+# 处理 content 内联 <think>... 的场景——流式用状态机,非流式用整块正则。
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+_REASONING_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_reasoning(text: str) -> str:
+    """去掉非流式文本里的思维链块(含未闭合时 <think> 之后的全部内容)。"""
+
+    cleaned = _REASONING_BLOCK_RE.sub("", text or "")
+    if _THINK_OPEN in cleaned:
+        cleaned = cleaned.split(_THINK_OPEN, 1)[0]
+    return cleaned.strip()
+
+
+def _tag_prefix_suffix(text: str, tag: str) -> str:
+    """text 的最长后缀,且是 tag 的真前缀(下一 chunk 可能拼齐标签);没有则 ""。"""
+
+    for size in range(min(len(tag) - 1, len(text)), 0, -1):
+        if text[-size:] == tag[:size]:
+            return text[-size:]
+    return ""
+
+
+class _ReasoningFilter:
+    """流式思维链过滤器(内容先入状态机,只放行确认不是思维链的部分)。
+
+    `<think>`/`</think>` 可能跨 chunk 断裂:普通文本只把"可能拼成标签的前缀"
+    扣在缓冲区,其余立即放行;思维链中只保留可能构成 close 的后缀,其余丢弃;
+    未闭合的思维链在流末(flush)整体丢弃。
+    """
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._buffer = ""
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self._buffer += chunk
+        out: List[str] = []
+        while self._buffer:
+            if self._in_think:
+                idx = self._buffer.find(_THINK_CLOSE)
+                if idx == -1:
+                    # 只留可能构成 close 的后缀,其余是思维链内容,丢弃
+                    self._buffer = _tag_prefix_suffix(self._buffer, _THINK_CLOSE)
+                    break
+                self._buffer = self._buffer[idx + len(_THINK_CLOSE) :]
+                self._in_think = False
+                continue
+            idx = self._buffer.find(_THINK_OPEN)
+            if idx == -1:
+                hold = _tag_prefix_suffix(self._buffer, _THINK_OPEN)
+                emit = self._buffer[: len(self._buffer) - len(hold)]
+                self._buffer = hold
+                out.append(emit)
+                break
+            out.append(self._buffer[:idx])
+            self._buffer = self._buffer[idx + len(_THINK_OPEN) :]
+            self._in_think = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        if self._in_think:
+            self._buffer = ""
+            return ""
+        tail, self._buffer = self._buffer, ""
+        return tail
+
 
 class GenerationError(RuntimeError):
-    """Qwen 生成失败(配置缺失 / 模型调用失败)。"""
+    """生成模型调用失败(配置缺失 / 请求失败 / 输出不可用)。"""
 
 
-@dataclass
-class ComposeContext:
-    """一次生成所需的全部上下文。"""
+async def generate_title(config: BusinessConfig, first_user_message: str) -> str:
+    """基于首条用户消息生成会话标题(2-8 个字);失败抛 GenerationError。"""
 
-    message: str
-    decision_summary: str = ""
-    profile: Optional[CustomerProfile] = None
-    tool_result: Optional[Dict[str, Any]] = None
-    tool_error: Optional[str] = None
-    passages: List[Dict[str, Any]] | None = None
-    awaiting_confirmation: Optional[str] = None  # 确认卡片提示语
-    handoff: Optional[Dict[str, Any]] = None
-    history: str = ""
-    # 本次调度的专职 AGENT(人设提示词进系统提示;为空时用通用客服人设)
-    agent_title: str = ""
-    agent_instructions: str = ""
-
-
-_QWEN_SYSTEM_TEMPLATE = """{persona_block}
-
-硬性规则(任何 AGENT 都适用):
-- 只能基于下方提供的「已查证信息」回答,禁止编造订单号、金额、政策细节。
-- 「已查证信息」中没有的内容,礼貌说明并建议客户提供更多信息或转人工。
-- 每次回复 2-4 句话,除非客户要求详细说明。
-- 客户情绪激动时,先安抚,再给方案。
-- 如果信息里包含确认提示(待确认动作),引导客户点击卡片上的按钮确认或取消。
-- 如果已转入人工排队,告知排队位置与预计等待,请客户稍候。
-
-【客户资料】
-{profile_block}
-
-【本次决策(Jev)】
-{decision_block}
-
-【已查证信息(工具/知识库结果)】
-{evidence_block}
-
-【对话历史】
-{history_block}
-"""
-
-_DEFAULT_PERSONA = (
-    "你是{agent_name},{company_name}的在线客服。你的任务是把已经查证好的结果"
-    "用自然、亲切、简洁的中文说给客户听。"
-)
-
-
-class QwenComposer:
-    """Qwen 流式话术生成器。"""
-
-    def __init__(self, config: BusinessConfig) -> None:
-        self._config = config
-        self._cfg = config.require_model("chat")  # 缺失直接 ConfigurationError
-        self._title_cfg = config.model_config("title")
-        logger.info(
-            "Qwen 生成层就绪(provider=%s, model=%s)。",
-            self._cfg["provider"],
-            self._cfg["model"],
-        )
-
-    # ------------------------------------------------------------- 流式生成
-    async def compose_stream(self, ctx: ComposeContext) -> AsyncIterator[str]:
-        """流式生成客服话术,逐段 yield 文本。"""
-
-        payload = {
-            "model": self._cfg["model"],
-            "temperature": self._cfg["temperature"],
-            "stream": True,
-            "messages": [
-                {"role": "system", "content": self._build_system_prompt(ctx)},
-                {"role": "user", "content": self._build_user_prompt(ctx)},
-            ],
-        }
-        try:
-            async with httpx.AsyncClient(timeout=self._cfg["timeout_seconds"]) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self._cfg['base_url'].rstrip('/')}/chat/completions",
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {self._cfg['api_key']}",
-                        "Content-Type": "application/json",
-                    },
-                ) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        chunk = self._parse_sse_line(line)
-                        if chunk:
-                            yield chunk
-        except httpx.HTTPError as exc:
-            raise GenerationError(f"Qwen 生成失败:{exc}") from exc
-
-    async def compose(self, ctx: ComposeContext) -> str:
-        """非流式便捷接口(收集完整结果)。"""
-
-        parts = [chunk async for chunk in self.compose_stream(ctx)]
-        text = "".join(parts).strip()
-        if not text:
-            raise GenerationError("Qwen 返回了空内容。")
-        return text
-
-    # ------------------------------------------------------------- 标题生成
-    async def generate_title(self, first_user_message: str) -> str:
-        """基于首条用户消息生成会话标题(2-8 个字)。"""
-
-        cfg = self._title_cfg
-        if not str(cfg.get("base_url", "")).strip() or not str(cfg.get("api_key", "")).strip():
-            raise GenerationError("标题生成模型未配置(models.title 槽位)。")
-        payload = {
-            "model": cfg["model"],
-            "temperature": 0.3,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "根据用户的第一条消息,生成一个简短的客服会话标题。"
-                    "只输出标题本身,2-8 个汉字,不要标点、不要引号、不要解释。",
-                },
-                {"role": "user", "content": first_user_message[:200]},
-            ],
-        }
-        try:
-            async with httpx.AsyncClient(timeout=float(cfg.get("timeout_seconds", 30) or 30)) as client:
-                response = await client.post(
-                    f"{str(cfg['base_url']).rstrip('/')}/chat/completions",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {cfg['api_key']}"},
-                )
-                response.raise_for_status()
-                data = response.json()
-            title = str(data["choices"][0]["message"]["content"]).strip()
-        except (httpx.HTTPError, KeyError, IndexError, TypeError) as exc:
-            raise GenerationError(f"标题生成失败:{exc}") from exc
-        title = title.strip("\"'`。.!！?？, ,,，、")
-        return title[:20] or "客户会话"
-
-    # ------------------------------------------------------------- 提示词组装
-    def _build_system_prompt(self, ctx: ComposeContext) -> str:
-        profile_block = ctx.profile.summary_text() if ctx.profile else "尚未识别客户身份。"
-        history_block = ctx.history or "(暂无历史)"
-        # AGENT 人设优先:配置了 instructions 用专职 AGENT 的,否则用通用客服人设
-        persona = ctx.agent_instructions.strip()
-        if not persona:
-            persona = _DEFAULT_PERSONA.format(
-                agent_name=self._config.agent_name,
-                company_name=self._config.company_name,
+    cfg = config.model_config("title")
+    if not str(cfg.get("base_url", "")).strip() or not str(cfg.get("api_key", "")).strip():
+        raise GenerationError("标题生成模型未配置(models.title 槽位)。")
+    payload = {
+        "model": cfg["model"],
+        "temperature": 0.3,
+        "messages": [
+            {
+                "role": "system",
+                "content": "根据用户的第一条消息,生成一个简短的客服会话标题。"
+                "只输出标题本身,2-8 个汉字,不要标点、不要引号、不要解释。",
+            },
+            {"role": "user", "content": first_user_message[:200]},
+        ],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=float(cfg.get("timeout_seconds", 30) or 30)) as client:
+            response = await client.post(
+                f"{str(cfg['base_url']).rstrip('/')}/chat/completions",
+                json=payload,
+                headers={"Authorization": f"Bearer {cfg['api_key']}"},
             )
-        if ctx.agent_title:
-            persona = f"【当前 AGENT:{ctx.agent_title}】\n{persona}"
-        return _QWEN_SYSTEM_TEMPLATE.format(
-            agent_name=self._config.agent_name,
-            company_name=self._config.company_name,
-            persona_block=persona,
-            profile_block=profile_block,
-            decision_block=ctx.decision_summary or "(无)",
-            evidence_block=self._render_evidence(ctx),
-            history_block=history_block,
-        )
-
-    @staticmethod
-    def _build_user_prompt(ctx: ComposeContext) -> str:
-        parts: List[str] = [f"客户最新消息:{ctx.message}"]
-        if ctx.awaiting_confirmation:
-            parts.append(f"待客户确认:{ctx.awaiting_confirmation}")
-        if ctx.handoff:
-            parts.append(
-                "转人工信息:"
-                f"排队第 {ctx.handoff.get('queue_position', 1)} 位,"
-                f"预计等待 {ctx.handoff.get('estimated_wait', '稍等')}。"
-            )
-        if ctx.tool_error:
-            parts.append(f"工具执行出现问题:{ctx.tool_error}(请向客户说明并引导补充信息)")
-        parts.append("请生成回复:")
-        return "\n".join(parts)
-
-    @staticmethod
-    def _render_evidence(ctx: ComposeContext) -> str:
-        blocks: List[str] = []
-        if ctx.awaiting_confirmation:
-            blocks.append(f"[待确认动作] {ctx.awaiting_confirmation}")
-        if ctx.tool_error:
-            blocks.append(f"[工具异常] {ctx.tool_error}")
-        if ctx.tool_result:
-            message = ctx.tool_result.get("result", "")
-            data = ctx.tool_result.get("data", {})
-            blocks.append(f"[工具结果] {message}")
-            if data:
-                blocks.append(f"[结构化数据] {json.dumps(data, ensure_ascii=False)[:1500]}")
-        if ctx.passages:
-            for passage in ctx.passages:
-                blocks.append(
-                    f"[知识库·{passage.get('title', '')}] {passage.get('content', '')}"
-                )
-        if not blocks:
-            blocks.append("(本次无需查证,直接对话)")
-        return "\n".join(blocks)
-
-    # ------------------------------------------------------------- SSE 解析
-    @staticmethod
-    def _parse_sse_line(line: str) -> str:
-        line = (line or "").strip()
-        if not line.startswith("data:"):
-            return ""
-        data = line[len("data:") :].strip()
-        if not data or data == "[DONE]":
-            return ""
-        try:
-            event = json.loads(data)
-        except json.JSONDecodeError:
-            return ""
-        try:
-            choices = event.get("choices") or []
-            if not choices:
-                return ""
-            delta = choices[0].get("delta") or {}
-            content = delta.get("content")
-            return str(content) if content else ""
-        except (AttributeError, IndexError, TypeError):
-            return ""
+            response.raise_for_status()
+            data = response.json()
+        title = _strip_reasoning(str(data["choices"][0]["message"]["content"]))
+    except (httpx.HTTPError, KeyError, IndexError, TypeError) as exc:
+        raise GenerationError(f"标题生成失败:{exc}") from exc
+    title = title.strip("\"'`。.!！?？, ,,，、")
+    return title[:20] or "客户会话"

@@ -6,13 +6,17 @@ import logging
 from typing import Any, Dict, List
 
 from ..config import BusinessConfig
-from ..knowledge import FAQ_DOCUMENTS, ChromaVectorStore, Document, MemoryVectorStore
+from ..knowledge import ChromaVectorStore, Document, MemoryVectorStore, load_faq_documents
 
 logger = logging.getLogger(__name__)
 
 
 class RagService:
-    """按配置选择向量库(memory / chroma),索引 FAQ 语料并提供检索。"""
+    """按配置选择向量库(memory / chroma),索引知识库语料并提供检索。
+
+    语料默认来自 business.yaml 的 knowledge.documents(见 knowledge/faq.py);
+    调用方也可显式传入 documents 覆盖(测试/热更新场景)。
+    """
 
     def __init__(self, config: BusinessConfig, documents: List[Document] | None = None) -> None:
         settings = config.knowledge
@@ -29,7 +33,7 @@ class RagService:
                 self._store = MemoryVectorStore()
         else:
             self._store = MemoryVectorStore()
-        self.rebuild(documents or FAQ_DOCUMENTS)
+        self.rebuild(documents if documents is not None else load_faq_documents(config))
 
     def rebuild(self, documents: List[Document]) -> None:
         self._store.clear()

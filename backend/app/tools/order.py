@@ -28,10 +28,16 @@ async def _get_order(ctx: ToolContext) -> Dict[str, Any]:
     arguments: Dict[str, Any] = {}
     if ctx.params.order_id:
         arguments["order_id"] = ctx.params.order_id
+        # 绑定用户后同时带 customer_id:上游校验订单归属,只能查该用户的订单
+        if ctx.customer_id:
+            arguments["customer_id"] = ctx.customer_id
     elif ctx.customer_id:
         arguments["customer_id"] = ctx.customer_id
     else:
-        raise ToolError("请先提供客户身份(手机号/客户ID)或订单号,才能查询订单。")
+        raise ToolError(
+            "缺少查询条件:请引导客户提供订单号,或提供手机号/客户ID 核实身份"
+            "(已绑定身份时可直接查询该客户的订单)。"
+        )
 
     mapping = ctx.mcp.require_mapping("get_order")
     payload = await ctx.mcp.call_tool(mapping, arguments)

@@ -26,9 +26,12 @@ class SearchCustomerParams(BaseModel):
 
 async def _search_customer(ctx: ToolContext) -> Dict[str, Any]:
     mapping = ctx.mcp.require_mapping("search_customer")
-    payload = await ctx.mcp.call_tool(
-        mapping, ctx.params.model_dump(exclude_none=True)
-    )
+    # 绑定用户后只允许检索该用户:防止越过绑定身份查其他客户
+    if ctx.customer_id:
+        arguments: Dict[str, Any] = {"customer_id": ctx.customer_id}
+    else:
+        arguments = ctx.params.model_dump(exclude_none=True)
+    payload = await ctx.mcp.call_tool(mapping, arguments)
     records = _as_records(payload, "customers", "customer", "results", "list", "items")
     if not records:
         return {"result": "未找到匹配的客户,请核对手机号或客户 ID。", "data": {}, "found": False}

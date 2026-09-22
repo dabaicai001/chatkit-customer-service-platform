@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 # 域模型(与行业无关的通用结构)
 # ---------------------------------------------------------------------------
 @dataclass(slots=True)
+class OrderGoods:
+    """订单内的一件商品/服务(电商订单明细、机票乘客等通用)。"""
+
+    id: str
+    name: str
+    spec: str = ""
+    qty: int = 0
+    unit_price: float = 0.0
+    price: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class Order:
     id: str
     title: str
@@ -27,6 +42,8 @@ class Order:
     amount: float
     created_at: str
     tracking: str = ""
+    # 商品/服务明细(上游 get_order / list_orders 的 goods;未下发时为空列表)
+    goods: List[OrderGoods] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -70,6 +87,8 @@ class CustomerProfile:
     summary: str = ""
     orders: List[Order] = field(default_factory=list)
     tickets: List[Ticket] = field(default_factory=list)
+    # 订单真实总数(上游 list_orders 的 Total;未下发时回退 len(orders))
+    orders_total: Optional[int] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -77,6 +96,9 @@ class CustomerProfile:
         data.pop("raw", None)
         data["orders"] = [order.to_dict() for order in self.orders]
         data["tickets"] = [ticket.to_dict() for ticket in self.tickets]
+        data["orders_total"] = (
+            self.orders_total if self.orders_total is not None else len(self.orders)
+        )
         return data
 
     def summary_text(self) -> str:
@@ -164,7 +186,28 @@ def normalize_order(raw: Mapping[str, Any]) -> Order:
         amount=_first_float(raw, "amount", "total", "total_amount", "price", "pay_amount"),
         created_at=_first_str(raw, "created_at", "create_time", "createdAt", "order_time"),
         tracking=_first_str(raw, "tracking", "tracking_no", "logistics", "express"),
+        goods=_normalize_goods(raw),
     )
+
+
+def normalize_order_goods(raw: Mapping[str, Any]) -> OrderGoods:
+    """订单商品明细归一化:名称/规格/数量/单价/小计。"""
+
+    return OrderGoods(
+        id=_first_str(raw, "id", "goods_id", "goodsId", "product_id", "productId"),
+        name=_first_str(raw, "name", "goods_name", "goodsName", "product_name", "title"),
+        spec=_first_str(raw, "spec", "specification", "attr", "attrvalStr", "sku"),
+        qty=int(_first_float(raw, "qty", "quantity", "count", "num")),
+        unit_price=_first_float(raw, "unit_price", "unitPrice", "price_per", "single_price"),
+        price=_first_float(raw, "price", "subtotal", "total_price"),
+    )
+
+
+def _normalize_goods(raw: Mapping[str, Any]) -> List[OrderGoods]:
+    """提取订单上的商品明细列表(字段名容忍上游差异;无则空列表)。"""
+
+    records = _as_records(raw, "goods", "items", "order_goods", "orderGoods", "products")
+    return [normalize_order_goods(record) for record in records]
 
 
 def normalize_ticket(raw: Mapping[str, Any]) -> Ticket:
@@ -223,6 +266,8 @@ class CustomerGateway:
         self._cache_seconds = max(0.0, cache_seconds)
         self._cache: Dict[str, tuple[float, CustomerProfile]] = {}
         self._loop_time = 0.0
+        # 最近一次 load_profile 是否命中缓存(供侧栏耗时展示)
+        self.last_cache_hit: Optional[bool] = None
 
     def _now(self) -> float:
         import time
@@ -263,7 +308,9 @@ class CustomerGateway:
             raise McpError("load_profile 需要 customer_id。")
         cached = self._cache.get(customer_id)
         if not refresh and cached and self._now() - cached[0] < self._cache_seconds:
+            self.last_cache_hit = True
             return cached[1]
+        self.last_cache_hit = False
 
         base_mapping = self._mcp.require_mapping("get_customer")
         base_payload = await self._mcp.call_tool(base_mapping, {"customer_id": customer_id})
@@ -277,6 +324,10 @@ class CustomerGateway:
         orders_mapping = self._mcp.require_mapping("list_orders")
         orders_payload = await self._mcp.call_tool(orders_mapping, {"customer_id": customer_id})
         profile.orders = [normalize_order(r) for r in _as_records(orders_payload, "orders", "list", "items")]
+        # 真实订单总数(上游 MCPListOrdersResult.total,不受 limit 截断影响)
+        total = orders_payload.get("total") if isinstance(orders_payload, Mapping) else None
+        if isinstance(total, (int, float)) and not isinstance(total, bool):
+            profile.orders_total = int(total)
 
         # 工单为可选数据源:上游未暴露 list_tickets 时明确跳过(记录一次日志)
         tickets_mapping = self._mcp.mapping_for("list_tickets")

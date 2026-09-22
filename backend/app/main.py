@@ -4,6 +4,8 @@
 - POST /support/chatkit                  ChatKit 协议入口(聊天/组件/听写)
 - POST/GET /support/attachments/...      附件上传下载
 - GET  /support/customer                 客户画像快照(经 MCP)
+- POST /support/bind                     侧栏绑定用户(绑定后仅可查该用户订单)
+- DELETE /support/bind                   侧栏解绑
 - GET  /support/bootstrap                前端引导配置(品牌/面板/欢迎语,来自 business.yaml)
 - GET  /support/tools                    已启用工具与 Jev 路由参数(运维/调试)
 - GET  /support/health                   健康检查(含 MCP 数据面状态)
@@ -25,7 +27,7 @@ from starlette.responses import JSONResponse
 from .config import ConfigurationError, load_config
 from .server import CustomerServiceServer, create_chatkit_server
 
-DEFAULT_THREAD_ID = "demo_default_thread"
+DEFAULT_THREAD_ID = "default_thread"
 
 
 @asynccontextmanager
@@ -159,6 +161,7 @@ async def bootstrap_config(
             "greeting": config.greeting,
             "composer_placeholder": config.composer_placeholder,
         },
+        "binding": config.binding_texts,
         "panels": config.panels,
         "agents": [
             spec.to_dict() for spec in (server.jev.agents.get(name) for name in server.jev.agents.names())
@@ -167,11 +170,45 @@ async def bootstrap_config(
     }
 
 
+@app.post("/support/bind")
+async def bind_customer(
+    payload: dict[str, Any],
+    server: CustomerServiceServer = Depends(get_server),
+) -> dict[str, Any]:
+    """侧栏绑定用户:绑定后该会话只能查询该用户的订单信息。
+
+    body: {"thread_id": "...", "customer_id": "123"};thread_id 缺省用默认会话。
+    用户不存在返回 400(错误信息来自上游 MCP)。
+    """
+
+    thread_id = str(payload.get("thread_id") or "").strip() or DEFAULT_THREAD_ID
+    customer_id = str(payload.get("customer_id") or "").strip()
+    if not customer_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="customer_id 不能为空。")
+    try:
+        profile = await server.bind_customer(thread_id, customer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {"customer": profile.to_dict()}
+
+
+@app.delete("/support/bind")
+async def unbind_customer(
+    thread_id: str | None = Query(default=None, description="ChatKit thread 标识"),
+    server: CustomerServiceServer = Depends(get_server),
+) -> dict[str, Any]:
+    """侧栏解绑:清除该会话绑定的用户。"""
+
+    target = (thread_id or "").strip() or DEFAULT_THREAD_ID
+    server.unbind_customer(target)
+    return {"customer": None}
+
+
 @app.get("/support/tools")
 async def tools_debug(
     server: CustomerServiceServer = Depends(get_server),
 ) -> dict[str, Any]:
-    """已启用工具、Jev 路由参数与 MCP 映射(运维/调试)。"""
+    """已启用工具、Jev 路由参数、模型工具调用上限与 MCP 映射(运维/调试)。"""
 
     config = server.config
     return {
@@ -187,6 +224,7 @@ async def tools_debug(
                 "low": config.get("jev.confidence.low"),
             },
             "fallback_action": config.get("jev.fallback_action"),
+            "action_recommendation": config.get("jev.action_recommendation", True),
             "emotion_routing": config.get("jev.emotion_routing"),
             "models": {
                 slot: {
@@ -195,6 +233,9 @@ async def tools_debug(
                 }
                 for slot in ("decision", "chat", "title")
             },
+        },
+        "agent": {
+            "max_tool_rounds": config.get("agent.max_tool_rounds", 4),
         },
         "mcp": {
             "servers": server.mcp.server_names,

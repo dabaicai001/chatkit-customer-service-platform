@@ -1,6 +1,6 @@
 """knowledge:知识库子包。"""
 
-from .faq import FAQ_DOCUMENTS
+from .faq import load_faq_documents
 from .vector_store import ChromaVectorStore, Document, MemoryVectorStore
 
-__all__ = ["FAQ_DOCUMENTS", "Document", "MemoryVectorStore", "ChromaVectorStore"]
+__all__ = ["load_faq_documents", "Document", "MemoryVectorStore", "ChromaVectorStore"]

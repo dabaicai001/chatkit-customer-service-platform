@@ -18,7 +18,7 @@ class CustomerSupportThreadItemConverter(ThreadItemConverter):
         self, attachment: Attachment
     ) -> ResponseInputImageParam:
         if attachment.type != "image":
-            raise RuntimeError("Only image attachments are supported in this demo.")
+            raise RuntimeError("Only image attachments are supported.")
         try:
             stored, data = await self._attachment_store.read_file(attachment.id, context={})
             mime_type = (

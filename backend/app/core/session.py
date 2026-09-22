@@ -60,9 +60,21 @@ class SessionState:
 class SessionStateManager:
     """进程内会话状态管理(单机部署;多实例部署时换 Redis 等共享存储)。"""
 
-    def __init__(self, pending_ttl_seconds: int = PENDING_ACTION_TTL_SECONDS) -> None:
+    def __init__(
+        self,
+        pending_ttl_seconds: int = PENDING_ACTION_TTL_SECONDS,
+        *,
+        inherit_default_binding: bool = True,
+    ) -> None:
         self._states: Dict[str, SessionState] = {}
         self._pending_ttl = pending_ttl_seconds
+        # 工作台级默认绑定(右侧「绑定用户」设置):新会话自动继承,
+        # 避免客服每开一个新对话就要重新绑定同一个客户。
+        # 多租户/匿名用户与客服同实例部署时关掉它(business.yaml:
+        # session.inherit_default_binding=false),防止匿名会话inherit到
+        # 客服当前绑定的客户身份。
+        self._inherit_default_binding = inherit_default_binding
+        self._default_customer_id: Optional[str] = None
 
     def get(self, thread_id: str) -> SessionState:
         state = self._states.get(thread_id)
@@ -81,7 +93,37 @@ class SessionStateManager:
             state.customer_id = customer_id
             state.log(f"客户身份已绑定:{customer_id}", kind="system")
 
+    def unbind_customer(self, thread_id: str) -> None:
+        """解除客户身份绑定(侧栏「解绑」入口);未绑定时为空操作。"""
+
+        state = self.get(thread_id)
+        if state.customer_id is not None:
+            state.customer_id = None
+            state.log("客户身份已解除绑定", kind="system")
+
+    def bind_default_customer(self, customer_id: str) -> None:
+        """设置工作台级默认绑定(右侧「绑定用户」):新会话自动继承该身份。"""
+
+        customer_id = (customer_id or "").strip()
+        if customer_id:
+            self._default_customer_id = customer_id
+
+    def unbind_default_customer(self) -> None:
+        """清除工作台级默认绑定(右侧「解绑」)。"""
+
+        self._default_customer_id = None
+
     def customer_id(self, thread_id: str) -> Optional[str]:
+        """会话客户ID:本线程绑定优先,否则继承工作台级默认绑定。"""
+
+        own = self.get(thread_id).customer_id
+        if own:
+            return own
+        return self._default_customer_id if self._inherit_default_binding else None
+
+    def thread_customer_id(self, thread_id: str) -> Optional[str]:
+        """仅本线程的显式绑定(不含默认继承)——请求头识别等场景判断用。"""
+
         return self.get(thread_id).customer_id
 
     # ------------------------------------------------------------- 流水/备注

@@ -98,6 +98,24 @@ class BusinessConfig:
     def composer_placeholder(self) -> str:
         return str(self.get("customer_service.composer_placeholder", "输入你的问题…"))
 
+    @property
+    def binding_texts(self) -> Dict[str, str]:
+        """右侧「绑定用户」卡片文案(通用平台,换行业只改 business.yaml)。"""
+
+        section = self.section("customer_service.binding")
+        defaults: Dict[str, str] = {
+            "title": "绑定用户",
+            "input_placeholder": "输入用户ID",
+            "submit_label": "绑定",
+            "unbind_label": "解绑",
+            "hint": "输入用户ID绑定后,右侧展示该用户档案,对话中只能查询其订单信息。",
+            "bound_hint": "当前会话仅可查询该用户的订单信息",
+        }
+        return {
+            key: str(section.get(key) or default)
+            for key, default in defaults.items()
+        }
+
     # ------------------------------------------------------------ 模型层
     def model_config(self, slot: str) -> Dict[str, Any]:
         """decision / chat / title 三个模型槽位的配置。

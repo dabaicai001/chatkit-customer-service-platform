@@ -19,7 +19,7 @@ MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 
 
 class LocalAttachmentStore(AttachmentStore[dict[str, Any]]):
-    """In-memory attachment store suitable for local demos."""
+    """In-memory attachment store (local development / single instance)."""
 
     def __init__(
         self,
@@ -94,14 +94,14 @@ class LocalAttachmentStore(AttachmentStore[dict[str, Any]]):
         if not mime_type.startswith("image/"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only image attachments are supported in this demo.",
+                detail="Only image attachments are supported.",
             )
 
     def _validate_size(self, size: int) -> None:
         if size > self.max_bytes:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="Attachments are limited to 5 MB in this demo.",
+                detail="Attachments are limited to 5 MB.",
             )
 
     def _require_request(self, context: dict[str, Any]) -> Request:

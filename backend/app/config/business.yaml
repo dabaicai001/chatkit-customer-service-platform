@@ -13,6 +13,15 @@ customer_service:
   greeting: 您好,我是小A,请问有什么可以帮您?
   composer_placeholder: 输入你的问题,例如:我的订单到哪了?
   escalation_note: 如需人工服务,直接说"转人工"即可
+  # 右侧「绑定用户」卡片文案(通用平台:换行业只改这里,前端零硬编码;
+  # 如医疗行业可把 input_placeholder 改成"输入患者ID"、title 改成"绑定患者")
+  binding:
+    title: 绑定用户
+    input_placeholder: 输入用户ID
+    submit_label: 绑定
+    unbind_label: 解绑
+    hint: 输入用户ID绑定后,右侧展示该用户档案,对话中只能查询其订单信息。
+    bound_hint: 当前会话仅可查询该用户的订单信息
 
 # ---------------- 模型层 ----------------
 # decision = Jev(大脑里的"判断器");chat = 话术生成模型(负责"把话说好"的人,不限定厂商)
@@ -25,13 +34,22 @@ customer_service:
 # 槽位未配 base_url/api_key 时服务拒绝启动——不做静默降级。
 models:
   # Jev:意图识别 + 情绪 + 路由决策(小模型即可)
+  # 注意:Jev 的真实端点是 TypeSafe SystemOne(POST /v1/systemone),
+  # 不是 OpenAI Chat Completions,没有 /chat/completions 路径;
+  # base_url 填 https://api.typesafe.ai 即可(代码自动拼 /v1/systemone)。
   decision:
     provider: ${JEV_PROVIDER:-openjev}
     model: ${JEV_MODEL:-jev-latest}
-    base_url: ${JEV_BASE_URL:-https://api.typesafe.ai/v1/systemone}
+    base_url: ${JEV_BASE_URL:-https://api.typesafe.ai}
     api_key: ${JEV_API_KEY:-}
     temperature: 0.1
     timeout_seconds: 20
+    # true = Jev 客户端绕过系统代理直连(httpx trust_env=False)。
+    # 本机 Clash 注册表代理对 api.typesafe.ai 约 25% 概率传输层静默失败,
+    # 触发 jev.retry 后 Jev 从 ~1.5s 恶化到 6.5-9.8s;直连 8/8 成功、典型 1.5s。
+    # 上游 MCP / MiniMax 仍走注册表代理(它们直连 fake-ip 会 ConnectTimeout),
+    # 因此这个开关只作用于 decision 槽位,不要改成全局 env 代理变量。
+    direct: ${JEV_DIRECT:-true}
   # chat:客服话术生成(大模型;厂商不限——此处为 MiniMax 的 OpenAI 兼容端点)
   chat:
     provider: ${CHAT_PROVIDER:-openai-compatible}
@@ -53,6 +71,34 @@ knowledge:
   vector_store: memory           # memory = 纯 Python 零依赖 | chroma(预留)
   top_k: 3
   score_threshold: 0.05
+  # 知识库语料(换公司/换行业只改这里;代码零样例数据)
+  # 字段:doc_id(唯一)/ title / content / tags(检索标签)
+  # 不配置 documents = 空知识库(模型按"未查到"处理)
+  documents:
+    - doc_id: faq-refund-policy
+      title: 退款政策
+      content: 订单在发货前可随时申请退款,款项原路返回,预计 1-3 个工作日到账;发货后需先拒收或申请退货,仓库验收通过后办理退款;已签收订单支持 7 天无理由退货(定制类商品除外)。
+      tags: [退款, 退货, 政策, 售后]
+    - doc_id: faq-shipping
+      title: 物流与配送
+      content: 普通订单 48 小时内发货,顺丰/京东配送,全国大部分地区 2-4 天送达;物流进度可在「我的订单」中实时查看;大促期间可能延迟 1-2 天。
+      tags: [物流, 发货, 快递, 配送, 多久到]
+    - doc_id: faq-invoice
+      title: 发票开具
+      content: 支持电子普通发票和增值税专用发票;订单完成后在「我的订单-开具发票」提交,电子发票 1 个工作日开出并发送至邮箱;专票需提供税号与开票信息。
+      tags: [发票, 开票, 电子发票]
+    - doc_id: faq-warranty
+      title: 保修与质保
+      content: 数码配件自签收之日起享 1 年质保,主机类产品 2 年质保;质保期内非人为损坏免费维修或更换;寄修前请先在「我的工单」中登记,客服会提供寄修地址与运单号。
+      tags: [保修, 质保, 维修, 售后]
+    - doc_id: faq-points
+      title: 会员与积分
+      content: 消费 1 元累计 1 积分,积分可在结算时抵扣现金(100 积分 = 1 元);VIP 会员专享 95 折、优先发货与专属客服;积分有效期至获得次年年底。
+      tags: [会员, 积分, VIP, 权益]
+    - doc_id: faq-human
+      title: 人工客服服务时间
+      content: 人工客服服务时间为每天 9:00-22:00;非服务时间可留言,人工客服会在次日优先处理;紧急问题(如资金安全)可拨打 400-000-0000。
+      tags: [人工, 客服, 电话, 服务时间]
 
 # ---------------- 侧栏面板(前端按配置动态渲染) ----------------
 panels:
@@ -74,8 +120,10 @@ tools:
   - transfer_to_human
 
 # ---------------- 意图目录(Jev 的判断范围) ----------------
-# action = 该意图命中的工具名;none = 直接对话,不调工具
+# action = 该意图的默认函数(兜底);none = 直接对话,不调工具
 # agent = 该意图默认调度的专职 AGENT(Jev 可直接指定 agent,未指定时按这里兜底)
+# 注:实际调用哪个函数由 Jev 的 action 推荐 + 话术模型的 function calling 决定,
+#     这里的 action 只在 Jev 推荐缺失/非法时兜底(见 jev.action_recommendation)
 intents:
   greet:
     action: none
@@ -195,13 +243,17 @@ agents:
 # ---------------- Jev 决策引擎参数(路由旋钮,全部可配) ----------------
 jev:
   # 置信度分档:路由的核心旋钮
-  #   >= high        :直接执行业务工具
-  #   [low, high)    :执行业务工具,但提示生成模型回复需谨慎
-  #   <  low         :不执行业务工具,改走 fallback_action
+  #   >= high        :推荐/生成都以决策为准
+  #   [low, high)    :提示生成模型推荐仅供参考
+  #   <  low         :推荐不作为强引导
   confidence:
     high: 0.85
     low: 0.55
-  # 低置信度时的兜底动作:query_knowledge(查知识库)| transfer_to_human | none
+  # action 推荐:Jev 直选「建议调用哪个函数」(候选=已启用的非变更类工具);
+  # 关掉则完全走 intents.<name>.action 配置映射。真正发起调用与参数由
+  # 话术模型的 function calling 完成(chat 槽端点需支持 OpenAI 兼容 tools)。
+  action_recommendation: true
+  # 低置信度时的兜底动作(意图配置 action 缺失/非法时的引导):query_knowledge | transfer_to_human | none
   fallback_action: query_knowledge
   # 情绪 → 路由覆盖(命中即改道,优先于业务动作;填 none 表示不改道)
   emotion_routing:
@@ -214,6 +266,11 @@ jev:
   retry:
     attempts: 2                     # 总尝试次数(含首次)
     backoff_seconds: 0.5            # 每次重试前等待秒数
+
+# ---------------- 模型直连 MCP(function calling) ----------------
+# 话术模型(chat 槽位)带 tools 定义直接调用 MCP 工具;代码侧执行并回灌结果。
+agent:
+  max_tool_rounds: 4          # 单条消息允许的最大工具调用轮数(防无限循环)
 
 # ---------------- 规则(安全/确认门槛) ----------------
 rules:
@@ -260,3 +317,16 @@ mcp:
 
   # 画像缓存(秒):0 = 每次实时回源;短 TTL 避免面板频繁打爆上游
   profile_cache_seconds: 5
+
+  # 消息链路是否预加载客户画像(画像作为 Jev 决策与生成模型的上下文)。
+  # 默认关闭:省掉每条冷消息 get_customer + list_orders 两次 MCP 串行往返;
+  # 客户数据改由 function calling 按需获取(get_order 等工具凭会话绑定身份查询)。
+  # 侧栏面板经画像事件独立拉取(走同一缓存,不占对话关键路径)。
+  load_profile_on_message: false
+
+# ---------------- 会话隔离 ----------------
+# inherit_default_binding:右侧「绑定用户」是否为工作台级(新对话自动继承)。
+# 单客服工作台=true(客服不用每个新对话重绑);多租户/匿名用户与客服同实例
+# 部署时改 false——匿名会话绝不继承客服当前绑定的客户,彻底隔离。
+session:
+  inherit_default_binding: true
