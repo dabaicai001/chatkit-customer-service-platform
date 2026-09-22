@@ -15,6 +15,7 @@ import {
   DEFAULT_BOOTSTRAP,
   type AgentDispatch,
   type BootstrapConfig,
+  type PipelineTrace,
   type SupportView,
 } from "../types/support";
 
@@ -28,6 +29,7 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
   const [chatkit, setChatkit] = useState<ChatKitInstance | null>(null);
   const [bootstrap, setBootstrap] = useState<BootstrapConfig>(DEFAULT_BOOTSTRAP);
   const [dispatch, setDispatch] = useState<AgentDispatch | null>(null);
+  const [trace, setTrace] = useState<PipelineTrace | null>(null);
   const { profile, loading, error, refresh, setProfile } =
     useCustomerContext(threadId);
 
@@ -64,6 +66,7 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
   const handleThreadChange = useCallback((nextThreadId: string | null) => {
     setThreadId(nextThreadId);
     setDispatch(null); // 切换会话清空调度展示
+    setTrace(null); // 切换会话清空流程耗时
   }, []);
 
   const handleResponseCompleted = useCallback(() => {
@@ -83,6 +86,11 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
 
   const handleAgentDispatch = useCallback((next: AgentDispatch) => {
     setDispatch(next);
+  }, []);
+
+  const handlePipelineTrace = useCallback((next: PipelineTrace) => {
+    // partial(前几步)先展示,done(完整)覆盖更新
+    setTrace(next);
   }, []);
 
   const greeting = bootstrap.customer_service.greeting;
@@ -126,6 +134,7 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
                 onResponseCompleted={handleResponseCompleted}
                 onProfileUpdate={handleProfileEffect}
                 onAgentDispatch={handleAgentDispatch}
+                onPipelineTrace={handlePipelineTrace}
                 onWidgetActionComplete={handleWidgetActionComplete}
                 onChatKitReady={setChatkit}
               />
@@ -142,6 +151,10 @@ export default function Home({ scheme, onThemeChange }: HomeProps) {
             agents={bootstrap.agents}
             defaultAgent={bootstrap.default_agent}
             dispatch={dispatch}
+            trace={trace}
+            threadId={threadId}
+            onBindingChange={() => void refresh()}
+            bindingTexts={bootstrap.binding}
           />
         </div>
       </div>

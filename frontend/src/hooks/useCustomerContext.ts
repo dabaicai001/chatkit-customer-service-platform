@@ -36,7 +36,10 @@ export type CustomerProfile = {
   summary: string;
   orders: Order[];
   tickets: Ticket[];
-  timeline: TimelineEntry[];
+  /** 订单真实总数(上游 Total,不受列表条数限制;旧后端可能不下发) */
+  orders_total?: number;
+  /** 本次服务流水(后端未下发时缺省,前端降级为不展示) */
+  timeline?: TimelineEntry[];
 };
 
 type CustomerResponse = {

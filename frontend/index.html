@@ -4,7 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>通用客服工作台</title>
-    <script src="https://cdn.platform.openai.com/deployments/chatkit/chatkit.js"></script>
+    <!-- ChatKit UI 脚本本地化(CDN 在国内网络不可达;public/chatkit/ 与 public/assets/ck1/
+         为 https://cdn.platform.openai.com/deployments/chatkit/ 的快照,升级 = 覆盖这些文件) -->
+    <script src="/chatkit/chatkit.js"></script>
   </head>
   <body>
     <div id="root"></div>

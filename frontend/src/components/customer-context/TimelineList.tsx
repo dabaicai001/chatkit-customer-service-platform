@@ -3,12 +3,12 @@ import clsx from "clsx";
 import type { TimelineEntry } from "../../hooks/useCustomerContext";
 
 type TimelineListProps = {
-  timeline: TimelineEntry[];
+  timeline?: TimelineEntry[];
   limit?: number;
 };
 
 export function TimelineList({ timeline, limit }: TimelineListProps) {
-  const entries = limit ? timeline.slice(0, limit) : timeline;
+  const entries = limit ? (timeline ?? []).slice(0, limit) : (timeline ?? []);
   if (!entries.length) {
     return null;
   }

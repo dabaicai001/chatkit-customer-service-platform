@@ -4,7 +4,7 @@ import { useCallback, useRef } from "react";
 
 import type { CustomerProfile } from "../hooks/useCustomerContext";
 import type { ColorScheme } from "../hooks/useColorScheme";
-import type { AgentDispatch } from "../types/support";
+import type { AgentDispatch, PipelineTrace } from "../types/support";
 import {
   SUPPORT_CHATKIT_API_DOMAIN_KEY,
   SUPPORT_CHATKIT_API_URL,
@@ -22,6 +22,7 @@ type ChatKitPanelProps = {
   onResponseCompleted: () => void;
   onProfileUpdate: (profile: CustomerProfile) => void;
   onAgentDispatch?: (dispatch: AgentDispatch) => void;
+  onPipelineTrace?: (trace: PipelineTrace) => void;
   onWidgetActionComplete?: () => void;
   onChatKitReady?: (chatkit: ChatKitInstance) => void;
 };
@@ -35,6 +36,7 @@ export function ChatKitPanel({
   onResponseCompleted,
   onProfileUpdate,
   onAgentDispatch,
+  onPipelineTrace,
   onWidgetActionComplete,
   onChatKitReady,
 }: ChatKitPanelProps) {
@@ -68,9 +70,19 @@ export function ChatKitPanel({
         if (dispatch) {
           onAgentDispatch?.(dispatch);
         }
+        // dispatch 事件附带 partial trace(Jev/路由已完成部分的耗时)
+        const partialTrace = data.trace as PipelineTrace | undefined;
+        if (partialTrace?.steps?.length) {
+          onPipelineTrace?.(partialTrace);
+        }
+      } else if (name === "pipeline_trace/update") {
+        const trace = data.trace as PipelineTrace | undefined;
+        if (trace?.steps?.length) {
+          onPipelineTrace?.(trace);
+        }
       }
     },
-    [onProfileUpdate, onAgentDispatch]
+    [onProfileUpdate, onAgentDispatch, onPipelineTrace]
   );
 
   const chatkit = useChatKit({

@@ -5,12 +5,19 @@ import { formatDate } from "./utils";
 import { statusTone } from "./utils";
 
 type OrdersViewProps = {
-  orders: Order[];
+  orders?: Order[];
+  /** 订单真实总数(上游 Total;未传时回退 orders.length) */
+  total?: number;
 };
 
+/** 侧栏只展示最近 N 条,避免订单多了面板被拉爆;完整查询走对话(实时请求上游) */
+const RECENT_LIMIT = 5;
+
 /** 订单列表:通用结构,适配电商/物流/SaaS 订阅等场景 */
-export function OrdersView({ orders }: OrdersViewProps) {
-  if (!orders.length) {
+export function OrdersView({ orders, total }: OrdersViewProps) {
+  const list = orders ?? [];
+  const ordersTotal = total ?? list.length;
+  if (!list.length) {
     return (
       <section className="rounded-3xl border border-slate-200 bg-white/80 p-5 text-sm text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-400">
         暂无订单记录。
@@ -18,13 +25,20 @@ export function OrdersView({ orders }: OrdersViewProps) {
     );
   }
 
+  const recent = list.slice(0, RECENT_LIMIT);
+
   return (
     <section className="rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/70">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        订单列表
-      </h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          订单列表
+        </h3>
+        <span className="text-xs text-slate-400 dark:text-slate-500">
+          共 {ordersTotal} 条
+        </span>
+      </div>
       <div className="mt-4 space-y-3">
-        {orders.map((order) => (
+        {recent.map((order) => (
           <article
             key={order.id}
             className="rounded-2xl border border-slate-200/70 bg-white/90 p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md dark:border-slate-800/70 dark:bg-slate-900/70"
@@ -59,6 +73,11 @@ export function OrdersView({ orders }: OrdersViewProps) {
           </article>
         ))}
       </div>
+      {list.length > RECENT_LIMIT && (
+        <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+          侧栏仅显示最近 {RECENT_LIMIT} 条(按下单时间倒序);更多订单请在对话中询问,实时查询。
+        </p>
+      )}
     </section>
   );
 }

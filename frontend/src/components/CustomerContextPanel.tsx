@@ -2,10 +2,19 @@ import { Mail, Phone } from "lucide-react";
 import clsx from "clsx";
 
 import type { CustomerProfile } from "../hooks/useCustomerContext";
-import type { AgentDispatch, AgentInfo, PanelConfig, SupportView } from "../types/support";
+import type {
+  AgentDispatch,
+  AgentInfo,
+  BindingTexts,
+  PanelConfig,
+  PipelineTrace,
+  SupportView,
+} from "../types/support";
 import { AgentDispatchPanel } from "./customer-context/AgentDispatchPanel";
+import { CustomerBindPanel } from "./customer-context/CustomerBindPanel";
 import { OverviewView } from "./customer-context/OverviewView";
 import { OrdersView } from "./customer-context/OrdersView";
+import { PipelineTracePanel } from "./customer-context/PipelineTracePanel";
 import { TicketsView } from "./customer-context/TicketsView";
 
 type CustomerContextPanelProps = {
@@ -21,6 +30,14 @@ type CustomerContextPanelProps = {
   defaultAgent: string;
   /** Jev 本次调度的 AGENT */
   dispatch: AgentDispatch | null;
+  /** 本次消息的调用流程与耗时(生成中为 partial) */
+  trace: PipelineTrace | null;
+  /** 当前 ChatKit 会话(绑定用户按会话隔离) */
+  threadId: string | null;
+  /** 绑定/解绑成功后刷新右侧画像 */
+  onBindingChange: () => void;
+  /** 「绑定用户」卡片文案(来自 business.yaml,换行业只改 YAML) */
+  bindingTexts?: BindingTexts;
 };
 
 const PANEL_CLASS =
@@ -37,7 +54,23 @@ export function CustomerContextPanel({
   agents,
   defaultAgent,
   dispatch,
+  trace,
+  threadId,
+  onBindingChange,
+  bindingTexts,
 }: CustomerContextPanelProps) {
+  const bound = profile
+    ? { customer_id: profile.customer_id, name: profile.name }
+    : null;
+  const bindPanel = (
+    <CustomerBindPanel
+      threadId={threadId}
+      bound={bound}
+      onBindingChange={onBindingChange}
+      texts={bindingTexts}
+    />
+  );
+
   if (loading && !profile) {
     return (
       <section className={PANEL_CLASS}>
@@ -78,14 +111,16 @@ export function CustomerContextPanel({
           </h2>
         </header>
         <div className="mt-5 flex-1 overflow-y-auto pr-1 space-y-6">
+          {bindPanel}
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            开始对话后,客服会自动识别客户身份并在此展示档案、订单与工单。
+            输入用户ID绑定后,客服会自动识别客户身份并在此展示档案、订单与工单。
           </p>
           <AgentDispatchPanel
             agents={agents}
             defaultAgent={defaultAgent}
             dispatch={dispatch}
           />
+          <PipelineTracePanel trace={trace} />
         </div>
       </section>
     );
@@ -144,7 +179,9 @@ export function CustomerContextPanel({
 
   let bodyContent = null;
   if (view === "orders") {
-    bodyContent = <OrdersView orders={profile.orders} />;
+    bodyContent = (
+      <OrdersView orders={profile.orders} total={profile.orders_total} />
+    );
   } else if (view === "tickets") {
     bodyContent = <TicketsView tickets={profile.tickets} />;
   } else {
@@ -155,12 +192,14 @@ export function CustomerContextPanel({
     <section className={PANEL_CLASS}>
       {headerContent}
       <div className="mt-5 flex-1 overflow-y-auto pr-1 space-y-6">
+        {bindPanel}
         {bodyContent}
         <AgentDispatchPanel
           agents={agents}
           defaultAgent={defaultAgent}
           dispatch={dispatch}
         />
+        <PipelineTracePanel trace={trace} />
       </div>
     </section>
   );

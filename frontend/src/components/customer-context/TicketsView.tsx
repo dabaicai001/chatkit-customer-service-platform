@@ -5,7 +5,7 @@ import { formatDate } from "./utils";
 import { statusTone } from "./utils";
 
 type TicketsViewProps = {
-  tickets: Ticket[];
+  tickets?: Ticket[];
 };
 
 const PRIORITY_TONE: Record<string, string> = {
@@ -17,7 +17,8 @@ const PRIORITY_TONE: Record<string, string> = {
 
 /** 工单列表:投诉/报修/咨询,适配各行业服务记录 */
 export function TicketsView({ tickets }: TicketsViewProps) {
-  if (!tickets.length) {
+  const list = tickets ?? [];
+  if (!list.length) {
     return (
       <section className="rounded-3xl border border-slate-200 bg-white/80 p-5 text-sm text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-400">
         暂无工单记录。
@@ -31,7 +32,7 @@ export function TicketsView({ tickets }: TicketsViewProps) {
         工单列表
       </h3>
       <div className="mt-4 space-y-3">
-        {tickets.map((ticket) => (
+        {list.map((ticket) => (
           <article
             key={ticket.id}
             className="rounded-2xl border border-slate-200/70 bg-white/90 p-4 shadow-sm dark:border-slate-800/70 dark:bg-slate-900/70"

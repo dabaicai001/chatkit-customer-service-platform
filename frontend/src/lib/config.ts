@@ -23,6 +23,9 @@ export const SUPPORT_CHATKIT_API_URL =
 export const SUPPORT_CUSTOMER_URL =
   import.meta.env.VITE_SUPPORT_CUSTOMER_URL ?? `${API_BASE}/customer`;
 
+export const SUPPORT_BIND_URL =
+  import.meta.env.VITE_SUPPORT_BIND_URL ?? `${API_BASE}/bind`;
+
 export const SUPPORT_BOOTSTRAP_URL =
   import.meta.env.VITE_SUPPORT_BOOTSTRAP_URL ?? `${API_BASE}/bootstrap`;
 

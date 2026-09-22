@@ -10,6 +10,10 @@ type OverviewViewProps = {
 
 /** 概览:客户快照 + 标签 + 订单/工单统计 + 本次服务流水 */
 export function OverviewView({ profile }: OverviewViewProps) {
+  // 画像字段按可选处理:上游/后端缺字段时降级为空,不让整个页面白屏
+  const tags = profile.tags ?? [];
+  const orders = profile.orders ?? [];
+  const tickets = profile.tickets ?? [];
   return (
     <div className="space-y-6">
       <div className="rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/70">
@@ -19,9 +23,9 @@ export function OverviewView({ profile }: OverviewViewProps) {
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
           {profile.summary || "暂无客户概况。"}
         </p>
-        {profile.tags.length > 0 && (
+        {tags.length > 0 && (
           <div className="mt-4 flex flex-wrap gap-2">
-            {profile.tags.map((tag) => (
+            {tags.map((tag) => (
               <span
                 key={tag}
                 className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-200"
@@ -36,10 +40,10 @@ export function OverviewView({ profile }: OverviewViewProps) {
 
       <div className="grid gap-3 sm:grid-cols-2">
         <InfoPill icon={Package} label="订单数">
-          {profile.orders.length}
+          {profile.orders_total ?? orders.length}
         </InfoPill>
         <InfoPill icon={TicketIcon} label="工单数">
-          {profile.tickets.length}
+          {tickets.length}
         </InfoPill>
       </div>
 
