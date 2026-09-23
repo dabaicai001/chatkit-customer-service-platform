@@ -1,6 +1,6 @@
 # 通用客服平台(Customer Service Platform)
 
-> GitHub:[github.com/dabaicai001/jeeves-desk](https://github.com/dabaicai001/jeeves-desk)
+> GitHub:[github.com/dabaicai001/jeves-desk](https://github.com/dabaicai001/jeves-desk)
 
 由 OpenAI ChatKit 官方 customer-support 示例重构而来:拔掉全部航空业务,抽象为
 **换行业只改配置、不改代码**的通用客服平台。
